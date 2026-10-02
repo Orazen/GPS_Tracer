@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="gpstracer placeholder logo">
+  <!--
+    PLACEHOLDER. Replace with the client's real logo.
+    Neutral map pin so nothing here implies an identity that has not been chosen.
+  -->
+  <rect width="64" height="64" rx="12" fill="#0f1720"/>
+  <path d="M32 12c-8.84 0-16 7.16-16 16 0 12 16 24 16 24s16-12 16-24c0-8.84-7.16-16-16-16z"
+        fill="#22c55e"/>
+  <circle cx="32" cy="28" r="6" fill="#0f1720"/>
+</svg>

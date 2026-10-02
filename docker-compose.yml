@@ -1,0 +1,129 @@
+# ---------------------------------------------------------------------------
+# GPS_Tracer — self-hosted fleet tracking
+#
+# Traccar + PostgreSQL. Traccar does all the tracking work; PostgreSQL stores
+# it. There is no custom backend.
+#
+# Ports deliberately published — only two:
+#   ${TRACCAR_WEB_PORT}  dashboard, human traffic, must sit behind HTTPS
+#   ${H02_PORT}          H02 tracker protocol, the tracker connects here
+#
+# Traccar listens on hundreds of protocol ports by default. None of them are
+# published here; exposing them is how servers end up on botnet lists. Add a port
+# only when a tracker you actually own needs one.
+#
+# No `version:` key — it is obsolete and warns on Compose v2.
+# ---------------------------------------------------------------------------
+
+name: gpstracer
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TZ: ${TZ:-Europe/Rome}
+      # Deterministic collation regardless of the host locale.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      # Traccar must not start until PostgreSQL actually accepts connections.
+      # `pg_isready` alone is not enough: it also succeeds while the init
+      # scripts are still running. Checking the target database catches that.
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB} || exit 1",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - internal
+    # NOTE: deliberately no `ports:`. The database must never be reachable from
+    # the internet. See docs/SECURITY.md.
+
+  traccar:
+    # Pinned. Never use :latest — an upgrade then happens silently on restart
+    # and Traccar runs Liquibase migrations that you did not intend.
+    image: traccar/traccar:6.16-alpine
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Europe/Rome}
+      # Consumed by traccar/entrypoint.sh to render traccar.xml.
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      WEB_PORT: ${TRACCAR_WEB_PORT:-8082}
+      LOG_LEVEL: ${TRACCAR_LOG_LEVEL:-info}
+      JAVA_OPTS: ${JAVA_OPTS:--Xms256m -Xmx1024m}
+      POSITION_RETENTION_DAYS: ${POSITION_RETENTION_DAYS:-180}
+      # Bootstrap only. See docs/DOKPLOY.md § First run.
+      ALLOW_REGISTRATION: ${TRACCAR_ALLOW_REGISTRATION:-false}
+    # Traccar 6.16 has no native environment-variable configuration (there is no
+    # TRACCAR_* handling in the jar). It only reads conf/traccar.xml. So the
+    # entrypoint renders that file from these variables at container start.
+    #
+    # The script is mounted at /opt/traccar/gpstracer/, NOT inside conf/, because
+    # conf/ is overlaid by a volume and would shadow it.
+    entrypoint: ["/bin/sh", "/opt/traccar/gpstracer/entrypoint.sh"]
+    command:
+      - -jar
+      - tracker-server.jar
+      - conf/traccar.xml
+    volumes:
+      # The rendered config. A named volume, not a bind mount: the rendered file
+      # contains the database password, and this keeps it inside Docker's volume
+      # directory instead of anywhere near the repository. Writable because the
+      # entrypoint generates the file here.
+      - traccar-conf:/opt/traccar/conf
+      # Our entrypoint, read-only.
+      - ./traccar/config/entrypoint.sh:/opt/traccar/gpstracer/entrypoint.sh:ro
+      # Attachments, uploaded media, per-device custom assets.
+      - traccar-data:/opt/traccar/data
+      # Log files.
+      - traccar-logs:/opt/traccar/logs
+      # Branding overrides (logo, CSS, custom page). See branding/README.md.
+      - ./branding/override:/opt/traccar/web/override:ro
+    ports:
+      # Dashboard. Bind to loopback and let Dokploy's reverse proxy terminate
+      # TLS in front of it, rather than exposing 8082 to the world directly.
+      - "127.0.0.1:${TRACCAR_WEB_PORT:-8082}:${TRACCAR_WEB_PORT:-8082}"
+      # H02 tracker protocol. This one MUST be publicly reachable — it is how
+      # the tracker in the truck reaches the server. No TLS: the protocol is a
+      # plain TCP stream. Restrict with a firewall if you know your SIM's
+      # provider egress ranges.
+      - "${H02_PORT:-5013}:${H02_PORT:-5013}"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -qO- http://127.0.0.1:${TRACCAR_WEB_PORT:-8082}/api/server >/dev/null 2>&1 || exit 1",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # Generous: the first boot runs every Liquibase migration and can take a
+      # while on a small VPS.
+      start_period: 180s
+    networks:
+      - internal
+
+networks:
+  internal:
+    driver: bridge
+
+volumes:
+  db-data:
+  traccar-data:
+  traccar-logs:
+  # Rendered config lives in a named volume, not the repo.
+  traccar-conf:

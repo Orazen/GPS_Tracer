@@ -1,0 +1,35 @@
+# ---------------------------------------------------------------------------
+# GPS_Tracer — secrets and local state. None of this may ever be committed.
+# ---------------------------------------------------------------------------
+
+# Secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.keystore
+secrets/
+
+# Rendered at container start from environment variables. Contains the database
+# password in clear text.
+traccar/config/traccar.xml
+
+# Local backups — must never live in the repository
+backups/
+*.sql
+*.sql.gz
+*.dump
+
+# Branding: keep placeholders in Git, keep the real client's assets out of it.
+# See branding/README.md.
+branding/assets/*
+!branding/assets/.gitkeep
+!branding/assets/logo-placeholder.svg
+
+# Runtime / OS noise
+.DS_Store
+Thumbs.db
+*.swp
+*~
