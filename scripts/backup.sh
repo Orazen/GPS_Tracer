@@ -58,6 +58,14 @@ PROJECT="${COMPOSE_PROJECT_NAME:-gpstracer-fleet}"
 SERVICE="db"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 
+# Every service that writes to the shared database. A restore must stop all of
+# them (see do_restore), and the cleanup trap has to start them again -- which is
+# why this is defined here and not as a `local` inside the function: by the time
+# the trap fires the function's scope is gone, and `set -u` turns that into
+# "writers: unbound variable" followed by no restart at all. Tested by doing it
+# wrong first.
+WRITERS="traccar tacho-api tacho-worker"
+
 # Find the database container without assuming a project name.
 db_container() {
   local c
@@ -72,8 +80,11 @@ db_container() {
 # and a hard-coded name would silently archive nothing.
 tacho_volume() {
   local c vol
-  c="$(docker compose -p "$PROJECT" ps -q tacho-api 2>/dev/null | head -1)"
-  [ -z "$c" ] && c="$(docker ps --filter 'name=gpstracer-tacho-api' --format '{{.Names}}' | head -1)"
+  # -a matters: a restore stops this container before it needs the volume, and a
+  # running-only lookup finds nothing and reports "no tacho volume", quietly
+  # skipping the file restore. Which is what it did, once.
+  c="$(docker compose -p "$PROJECT" ps -q -a tacho-api 2>/dev/null | head -1)"
+  [ -z "$c" ] && c="$(docker ps -a --filter 'name=gpstracer-tacho-api' --format '{{.Names}}' | head -1)"
   [ -z "$c" ] && return 0
   vol="$(docker inspect "$c" \
     --format '{{range .Mounts}}{{if eq .Destination "/var/lib/gpstracer/tacho"}}{{.Name}}{{end}}{{end}}')"
@@ -204,11 +215,25 @@ do_restore() {
     [ "$confirm" = "$POSTGRES_DB" ] || { echo "Aborted."; exit 1; }
   fi
 
-  # Stop Traccar so it is not writing while we replace the schema underneath it.
-  # Restoring into a database that a running Traccar is actively writing to is how
-  # you get a half-restored, inconsistent fleet.
-  echo "Stopping Traccar ..."
-  docker compose -p "$PROJECT" stop traccar >/dev/null 2>&1 || true
+  # Stop EVERY writer, not just Traccar. All three containers share this
+  # database, and pg_restore --clean has to drop and recreate their tables.
+  # With the tachograph worker still running, its open transaction held a lock on
+  # `tacho_imports` and the restore sat on `ALTER TABLE ... DROP CONSTRAINT`
+  # indefinitely: not failed, not finished, database neither old nor new. That is
+  # what happened the first time this was tried, and it is why the list below is
+  # spelled out rather than left as "traccar".
+  echo "Stopping ${WRITERS} ..."
+  docker compose -p "$PROJECT" stop $WRITERS >/dev/null 2>&1 || true
+
+  # Bring them back whatever happens next: a restore that fails, or that is
+  # interrupted, must not leave the stack down. That is a second outage on top of
+  # the first, and it is the one nobody notices until the next driver card fails
+  # to import.
+  restore_cleanup() {
+    echo "Starting ${WRITERS} ..."
+    docker compose -p "$PROJECT" start $WRITERS >/dev/null 2>&1 || true
+  }
+  trap restore_cleanup EXIT
 
   # --clean --if-exists so objects absent from the dump are removed too; without
   # it, a restore leaves orphaned rows behind.
@@ -222,13 +247,13 @@ do_restore() {
     restore_tacho "$file"
   else
     echo "ERROR: pg_restore reported errors (see above)." >&2
-    echo "       Traccar is still stopped. Fix the problem or re-run this script." >&2
+    echo "       The database may be partially restored — it is neither the old state" >&2
+    echo "       nor the new one. Re-run the restore, or restore a different dump." >&2
     exit 1
   fi
 
-  echo "Starting Traccar ..."
-  docker compose -p "$PROJECT" start traccar >/dev/null 2>&1 || true
-  echo "Done. Check the dashboard before walking away."
+  echo "Done. The services are restarted on the way out; check the dashboard"
+  echo "before walking away."
 }
 
 do_list() {
