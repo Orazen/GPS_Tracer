@@ -1,0 +1,134 @@
+# ---------------------------------------------------------------------------
+# CI for GPS_Tracer.
+#
+# Three jobs, each covering a failure that has actually happened while building
+# this stack rather than a hypothetical one:
+#
+#   tacho      the Python suite, logic-only and then database-backed
+#   dashboard  that the dashboard still builds
+#   compose    that the compose file still means what it says
+#
+# The browser acceptance test (dashboard/scripts/verify.mjs) is NOT here: it
+# needs a whole running stack, a seeded fleet and a Chromium install, which is a
+# deployment test rather than a unit test. Run it against a real deployment after
+# deploying -- see docs/TESTING.md.
+# ---------------------------------------------------------------------------
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tacho:
+    name: tachograph service (Python + PostgreSQL)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: test
+          POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+        ports:
+          - 5432:5432
+        # Without this the suite starts against a Postgres that is still
+        # initialising and reports a connection error as a test failure.
+        options: >-
+          --health-cmd "pg_isready -U test -d test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 12
+    defaults:
+      run:
+        working-directory: tacho
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tacho/requirements-dev.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+
+      # Run twice on purpose. The first pass proves the parser, the rules engine
+      # and the API contract hold with no database at all; the second proves the
+      # migrations and the SQL-backed paths. Collapsing them into one run would
+      # hide which half broke.
+      - name: Logic suite (no database; the db tests skip)
+        run: python -m pytest tests/ -q
+
+      - name: Database-backed suite
+        env:
+          TACHO_TEST_DATABASE_URL: postgresql://test:test@127.0.0.1:5432/test
+        run: python -m pytest tests/ -q
+
+  dashboard:
+    name: dashboard (build)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - run: npm ci
+      - run: npm run build
+
+  compose:
+    name: compose configuration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the compose file and its port mappings
+        run: |
+          set -euo pipefail
+
+          # CI-only values. Nothing here reaches a real deployment; the point is
+          # to give the required variables something to interpolate.
+          cat > .env <<'ENV'
+          POSTGRES_DB=traccar
+          POSTGRES_USER=traccar
+          POSTGRES_PASSWORD=ci-only-not-a-secret
+          TACHO_API_TOKEN=ci-only-not-a-secret
+          ADMIN_EMAIL=ci@example.invalid
+          ADMIN_PASSWORD=ci-only-not-a-secret
+          ENV
+
+          docker compose config >/dev/null
+          echo "compose file parses"
+
+          # The H02 listener: the host port is configurable, the container port
+          # must stay on 5013, which is where Traccar opens h02. Mapping the host
+          # port onto the same number instead -- "${H02_PORT}:${H02_PORT}" -- is
+          # what put the tracker port on Traccar's *watch* listener and let the
+          # stack come up healthy while decoding nothing. Asserted here so it
+          # cannot come back.
+          docker compose config > /tmp/compose-default.yml
+          grep -q 'target: 5013' /tmp/compose-default.yml
+          echo "h02 maps to the container's h02 port"
+
+          H02_PORT=5093 docker compose config > /tmp/compose-custom.yml
+          grep -q 'published: "5093"' /tmp/compose-custom.yml
+          grep -q 'target: 5013' /tmp/compose-custom.yml
+          echo "h02 host port is configurable and stays on 5013 inside"
+
+          # The database must never be published. A mis-merged ports block would
+          # be invisible in review and fatal in practice.
+          if grep -qE 'published: "5432"' /tmp/compose-default.yml; then
+            echo "FAIL: PostgreSQL is published to the host" >&2
+            exit 1
+          fi
+          echo "PostgreSQL is not published"

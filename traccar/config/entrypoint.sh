@@ -36,6 +36,9 @@ CONF=/opt/traccar/conf/traccar.xml
 : "${LOG_LEVEL:=info}"
 : "${POSITION_RETENTION_DAYS:=180}"
 : "${ALLOW_REGISTRATION:=false}"
+# off | nominatim | google | ... See GEOCODER_ENTRY below for why the default is
+# off rather than the provider Traccar picks on its own.
+: "${GEOCODER:=off}"
 
 # Registration is closed by default. It exists only as a one-time bootstrap:
 # Traccar creates NO users on a fresh install, and with registration off there is
@@ -67,6 +70,43 @@ else
   RETENTION_ENTRY="    <entry key='position.retention'>${POSITION_RETENTION_DAYS}</entry>"
 fi
 
+# Address lookup for the stops and trips reports.
+#
+# Traccar defaults to the public Nominatim service and, with no key set, resolves
+# EVERY stop and trip of EVERY report through it. Three things follow, and all
+# three were measured on this stack:
+#
+#   * it is slow. The same "stops" report took 15.4 s and 18.0 s on two
+#     consecutive calls -- nothing is cached, because the lookups never succeed.
+#   * it is rate limited. Nominatim answers HTTP 429, which is also what its
+#     usage policy asks for at this request rate. A report is not a bulk lookup
+#     service and the addresses come back empty anyway.
+#   * it discloses data. Every lookup sends one of your customer's coordinates to
+#     a third party. For a stack that deliberately keeps driver data at home,
+#     that is a strange default to inherit by accident.
+#
+# So it is off unless asked for, and the stops and trips tables show a dash in the
+# address column instead of waiting twenty seconds for one. Set GEOCODER to a
+# provider and GEOCODER_KEY to its key to turn it on; the named providers and
+# their keys are in Traccar's own documentation.
+case "$GEOCODER" in
+  off|false|none|"")
+    GEOCODER_ENTRY="    <entry key='geocoder.enable'>false</entry>"
+    ;;
+  *)
+    GEOCODER_ENTRY="    <entry key='geocoder.enable'>true</entry>
+    <entry key='geocoder.type'>$(esc "$GEOCODER")</entry>"
+    if [ -n "${GEOCODER_KEY:-}" ]; then
+      GEOCODER_ENTRY="${GEOCODER_ENTRY}
+    <entry key='geocoder.key'>$(esc "$GEOCODER_KEY")</entry>"
+    fi
+    if [ -z "${GEOCODER_KEY:-}" ] && [ "$GEOCODER" != "nominatim" ]; then
+      echo "WARNING: GEOCODER=$GEOCODER usually needs GEOCODER_KEY; without one" >&2
+      echo "         the lookups will fail and reports will be slow." >&2
+    fi
+    ;;
+esac
+
 cat > "$CONF" <<XML
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE properties SYSTEM 'http://java.sun.com/dtd/properties.dtd'>
@@ -92,6 +132,9 @@ cat > "$CONF" <<XML
 
     <!-- Data retention. Days of position history. -->
 ${RETENTION_ENTRY}
+
+    <!-- Address lookup for stops and trips. Off by default; see the header. -->
+${GEOCODER_ENTRY}
 
     <!-- Logging -->
     <entry key='log.level'>$(esc "$LOG_LEVEL")</entry>

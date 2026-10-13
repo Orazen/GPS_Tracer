@@ -1,0 +1,14 @@
+# Never send these into the build context.
+#
+# `node_modules` is the important one: copying a host-installed tree into an
+# alpine image is how you get binaries built against a different libc, and it
+# silently defeats the reproducible `npm ci` in the Dockerfile.
+
+node_modules
+dist
+shots
+*.log
+.env
+.env.*
+.DS_Store
+.vite

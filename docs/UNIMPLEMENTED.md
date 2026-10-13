@@ -20,7 +20,7 @@ here has been tested.
 
 | Feature | Why it is blocked | What is needed to close it |
 |---|---|---|
-| **End-to-end GPS tracker verification on H02:5013** | No tracker has ever connected. The port listens; no device has spoken to it. | One SinoTrack ST-906L (or equivalent), a SIM, and `docs/TESTING.md` |
+| **End-to-end GPS tracker verification on H02:5013** | No tracker has ever connected. The listener and decoder are exercised by `scripts/simulate-fleet.py`, and the published port now genuinely reaches h02 — it used to land on Traccar's *watch* listener instead (see §7.8), which was found by sending a real H02 packet from the host and reading the acknowledgement back. None of that involves a radio link, a SIM or GNSS. | One SinoTrack ST-906L (or equivalent), a SIM, and `docs/TESTING.md` |
 | **Tracker protocol confirmation** | The device's actual protocol is assumed from documentation, not observed. It may need GT06, or a different port entirely. | The device, and its traffic |
 | **Overspeed, power-disconnect (tamper) and SOS notifications** | Each depends on the specific device emitting the event. Traccar supports them; **the tracker is unverified**, and it is wrong to claim them first. | The device, then deliberately trigger each condition |
 | **Ignition/ACC detection** | A wired input. Cannot be simulated from documentation. | Installation and a wiring check |
@@ -66,12 +66,12 @@ here has been tested.
 
 | Feature | Status | Note |
 |---|---|---|
-| **Fleet dashboard (Phase 2)** | ❌ **NOT BUILT IN THIS PASS** | Owner and Fleet Manager roles, vehicle/tracker/driver registry, MapLibre live map, route playback, trip and stop reports, geofence management, the alerts feed, and the Italian/English switch are all specified and **not built here**. A Traccar UI front-end exists separately in the `gpstracer` checkout (`web/`) but targets a different stack (MySQL/GT06N) and was not merged or validated against this deployment |
-| Tachograph dashboard screens | ⚠️ **API ONLY** | Every capability Phase 4 requires has an API: activity timeline, daily weekly summaries, coverage and missing-data warnings, exportable CSV with provenance, audit log, role gating. **There is no UI in front of it** |
+| **Fleet dashboard (Phase 2)** | ✅ **BUILT AND VERIFIED** | `dashboard/` serves the app and proxies both upstreams from one origin, so there is one sign-in and the tachograph service token never reaches the browser. Fleet map, route history with stops and arrivals, geofence management, summary/stop/trip reports, a real XLSX export and the Italian/English switch are present. `dashboard/scripts/verify.mjs` drives every screen in a real browser against a seeded fleet and fails on an empty report, a non-spreadsheet download or a console error — which is how two of the defects below were found. **Not built:** the vehicle/tracker/driver registry screens (Traccar's own UI is the break-glass answer) and the mobile confirm page |
+| Tachograph dashboard screens | ✅ **BUILT** | Four sections in front of the API: Imports (history, status, raw evidence), Activity (timeline, per-day totals, coverage and missing-data warnings, CSV link), Findings (results with their article, breaches, disclosed assumptions) and Access log (owner-only). The rules version and the "not validated against a reference report" notice are on screen, not just in a response body |
 | Driver-card registry and assignment history UI | ⚠️ **SCHEMA + API ONLY** | `tacho_drivers`, `tacho_card_assignments` and `tacho_vehicle_assignments` exist and are migrated, but there are **no endpoints** for managing assignments and no UI |
 | Mobile confirm page | ❌ **NOT IMPLEMENTED** | Deferred in the fleet spec |
 | PDF export | ❌ **NOT IMPLEMENTED** | CSV only |
-| Excel/XLSX export | ❌ **NOT IMPLEMENTED** | Traccar's own reports provide XLSX; the tachograph service provides CSV |
+| Excel/XLSX export | ✅ **BUILT** | The dashboard requests Traccar's raw spreadsheet and hands the response straight to the browser, refusing to save a body that is not a spreadsheet — Traccar answers a careless `Accept` header with JSON, and a JSON file named `.xlsx` opens as a corrupt file. The acceptance test checks the bytes (ZIP magic and size), not the filename. The tachograph service exports CSV |
 
 ---
 
@@ -81,11 +81,12 @@ here has been tested.
 |---|---|---|
 | Dokploy deployment | 📄 **DOCUMENTED, UNVERIFIED** | `docs/DOKPLOY.md` describes it. The stack has never been deployed through Dokploy from this repository; it has been run locally under Docker Compose |
 | HTTPS | ❌ **NOT CONFIGURED HERE** | Traccar's web port binds to loopback explicitly so a reverse proxy must terminate TLS. No proxy, certificate or TLS configuration is in this repository |
-| Automated tests in CI | ❌ **NOT CONFIGURED** | 327 tests exist and pass when run by hand (exit status verified). There is no CI pipeline, so nothing runs them on push |
-| Smoke test covering the tachograph service | ❌ **NOT EXTENDED** | `scripts/smoke-test.sh` checks Traccar, the database, the tracker port and backups. It does **not** yet check `tacho-api` health, migrations or queue depth |
-| Backup covering the tachograph volume | ⚠️ **GAP** | `scripts/backup.sh` dumps PostgreSQL only. The `tacho-data` volume holds the uploaded originals and **must be backed up alongside it**, or a restore leaves imports pointing at missing files. Not yet automated |
+| Automated tests in CI | ✅ **CONFIGURED** | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). Three jobs: the Python suite run twice (logic only, then against a real PostgreSQL service), the dashboard build, and compose validation that also asserts the h02 port mapping and that PostgreSQL is not published. The 327 tests pass locally with their exit status checked; CI is what stops them rotting |
+| Smoke test covering the tachograph service | ✅ **EXTENDED** | `scripts/smoke-test.sh` now also checks `tacho-api` health, that it refuses a read with no service token, that it accepts the token as `owner`, and that a `viewer` cannot read the access log. **Still not checked:** migration state and queue depth |
+| Backup covering the tachograph volume | ✅ **AUTOMATED** | `scripts/backup.sh` writes the PostgreSQL dump and an archive of the `tacho-data` volume under one timestamp, prunes them together, and a restore puts both back. The archive was restored into a scratch volume and matched the live one file for file |
 | Database migrations | ✅ **DONE** | `tacho/migrations/*.sql`, applied by a checksum-verified runner that refuses to start if an applied migration has changed |
-| Role separation | ⚠️ **PARTIAL** | The tachograph API enforces `owner` / `fleet_manager` / `viewer`. Traccar enforces its own users and permissions. **There is no single sign-on between them**; the dashboard is expected to authenticate against Traccar and forward the identity |
+| Role separation | ⚠️ **PARTIAL, BY DESIGN** | The tachograph API enforces `owner` / `fleet_manager` / `viewer`. Traccar enforces its own users and permissions. The dashboard authenticates against Traccar and forwards the identity, so a viewer is refused the driver data and the access log (verified end to end, not just at the unit level). **There is still no single sign-on between the two user stores**: the dashboard maps a Traccar role onto a tachograph role by email domain, which is a mapping this project invented and which a real identity provider should replace |
+| Demonstration data without hardware | ✅ **DONE** | `scripts/simulate-fleet.py` speaks H02 to the real listener and lets Traccar's own decoder create the positions. It proves the listener, the decoder and everything downstream of a stored position. It proves **nothing** about the radio link, the SIM, GNSS, the device firmware or ACC wiring |
 | Audit logging | ⚠️ **PARTIAL** | The tachograph service audits every read and write of driver data with actor, role and source IP. Traccar's own actions are not mirrored into it |
 
 ---
@@ -112,21 +113,45 @@ Recorded so they are not rediscovered expensively.
 1. **Traccar creates no users on first boot.** The stack passes every healthcheck and
    nobody can log in. `scripts/create-admin.sh` plus a one-time registration flag is
    the supported path. See the README's *First run*.
-2. **A Compose project-name change silently orphans named volumes.** Renaming the
-   project gives a fresh empty database and leaves the real one behind. Do not rename
-   `gpstracer`.
+2. **The compose project name is `gpstracer-fleet`, deliberately — it is not the
+   product name.** It prefixes every volume. A generic name collides with any other
+   stack on the same machine that also uses it, and Docker does not warn: it hands
+   the container whatever volume already carries that name. That is exactly what was
+   happening here — a `postgres:16-alpine` container mounted a **MySQL** data
+   directory and crash-looped with `chown: /var/lib/postgresql/data/mysql.sock: No
+   such file or directory`, which reads like data corruption rather than a naming
+   collision. Changing the name again later orphans the existing volumes (a fresh
+   empty database, the real one left behind), so rename deliberately or not at all.
+   A second copy of the stack on one host must use `docker compose -p <name>`.
 3. **Traccar's web port is bound to loopback on purpose.** Putting a reverse proxy in
    front is required, not optional, before this is reachable from the internet.
 4. **The tachograph database and the `tacho-data` volume must be restored together.**
    See §5.
 5. **`tacho_imports` is both a queue and an audit trail.** Truncating it discards
    import history, not just pending work.
-6. **Local environment note.** During this work, two unrelated things were found in
-   the host's Docker state and left alone deliberately: multiple checkouts of this
-   project exist (`~/Desktop/GPS_Tracer`, `~/Desktop/GPS_Tracker`, and the copies
-   inside `~/Desktop/gpstracer`), and the container `gpstracer-db-1` is in a
-   **crash-loop** (`chown: /var/lib/postgresql/data/mysql.sock: No such file or
-   directory` — a MySQL data directory mounted into a `postgres:16-alpine` image).
-   It belongs to a different checkout and was not modified. It should be removed or
-   repaired, and the ownership of the checkouts settled, before anyone acts on the
-   "which directory is the real repository" question.
+6. **Local environment note.** The host carries more than one checkout of this
+   project (`~/Desktop/GPS_Tracer`, and the one this register lives in,
+   `~/Desktop/gpstracer/GPS_Tracer`), plus an unrelated MySQL stack in
+   `~/Desktop/gpstracer/` that claims the compose project name `gpstracer`. The
+   container `gpstracer-db-1` belongs to `~/Desktop/GPS_Tracer` and is in a
+   **crash-loop** because that name collision gave it a MySQL volume; it was left
+   alone deliberately, as were the other checkouts. Run
+   `docker ps -a --format '{{.Names}} {{.Status}}' | grep gpstracer` before
+   concluding that a stack is broken: two of them were, and neither was this one. It
+   is worth removing the stray container and settling which checkout is authoritative.
+7. **Address lookup is off by default.** Traccar resolves every stop and trip
+   through a geocoder on *every* report. With the default provider (public
+   Nominatim) and no key, those calls are rate limited (HTTP 429), nothing is
+   cached, and the same `stops` report measured 15.4 s and then 18.0 s on
+   consecutive calls — forever. With the geocoder off the same report, same rows,
+   takes 0.31 s. Off is also the only setting that does not send a customer's
+   coordinates to a third party, which is the right default for a stack that keeps
+   driver data at home. The address column shows a dash; `GEOCODER=google` plus
+   `GEOCODER_KEY` turns the lookup back on.
+8. **The published H02 port must not be assumed to be the port Traccar listens on.**
+   `H02_PORT` is only the host side of the mapping; Traccar opens h02 on 5013 and
+   reads nothing else. Mapping `${H02_PORT}:${H02_PORT}` put the tracker port on
+   Traccar's *watch* listener (5093) and produced a stack that passed every
+   healthcheck while decoding nothing — found by sending a real H02 frame from the
+   host and reading the decoder's own log line. `H02_PORT` was in the environment
+   the whole time, which is what made it convincing. CI now asserts the mapping.

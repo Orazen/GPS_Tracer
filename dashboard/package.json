@@ -1,0 +1,28 @@
+{
+  "name": "gpstracer-dashboard",
+  "private": true,
+  "version": "0.2.0",
+  "type": "module",
+  "description": "GPS_Tracer fleet and tachograph dashboard. Talks to Traccar and the tachograph service through its own server-side proxy.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "serve": "node server.mjs",
+    "start": "node server.mjs",
+    "preview": "vite preview --port 5174",
+    "verify": "node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "maplibre-gl": "^4.7.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "playwright": "^1.49.0",
+    "vite": "^5.4.11"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

@@ -159,21 +159,28 @@ nmap -p 5432 fleet.example.com     # expect: filtered
 
 ## 8. Persistent volumes
 
-Three named volumes hold everything:
+The prefix is the compose project name, `gpstracer-fleet` by default. Five named
+volumes hold everything:
 
 | Volume | Holds | Losing it means |
 |---|---|---|
-| `gpstracer_db-data` | the entire fleet database | total data loss |
-| `gpstracer_traccar-data` | attachments, media | losing uploads only |
-| `gpstracer_traccar-logs` | log files | losing history only |
+| `gpstracer-fleet_db-data` | the entire fleet database, including the `tacho_*` tables | total data loss |
+| `gpstracer-fleet_tacho-data` | uploaded driver cards | imports point at files that are gone; the database is not enough on its own |
+| `gpstracer-fleet_traccar-data` | attachments, media | losing uploads only |
+| `gpstracer-fleet_traccar-logs` | log files | losing history only |
+| `gpstracer-fleet_traccar-conf` | the rendered `traccar.xml` | nothing — regenerated at every start |
+
+`db-data` and `tacho-data` must be backed up **together**: an import row
+references a stored file, and restoring one without the other leaves the
+tachograph screen referring to evidence that is no longer there.
 
 Verify they exist and are not anonymous:
 
 ```bash
-docker volume ls | grep gpstracer
+docker volume ls | grep gpstracer-fleet
 ```
 
-`gpstracer_traccar-conf` holds the rendered `traccar.xml` with your database
+`gpstracer-fleet_traccar-conf` holds the rendered `traccar.xml` with your database
 password in it. It is regenerated on every start, so it does not need backing up
 — but it does mean anyone with Docker access can read the password. That is the
 same trust boundary as the Dokploy UI.

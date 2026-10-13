@@ -4,9 +4,15 @@
 # Traccar + PostgreSQL. Traccar does all the tracking work; PostgreSQL stores
 # it. There is no custom backend.
 #
-# Ports deliberately published — only two:
-#   ${TRACCAR_WEB_PORT}  dashboard, human traffic, must sit behind HTTPS
+# Ports deliberately published — only these, and all but one on loopback:
+#   ${DASHBOARD_PORT}    fleet + tachograph dashboard, human traffic, behind HTTPS
+#   ${TRACCAR_WEB_PORT}  Traccar's own UI, loopback only (break-glass access)
 #   ${H02_PORT}          H02 tracker protocol, the tracker connects here
+#   ${TACHO_API_PORT}    tachograph API, loopback only
+#
+# ${H02_PORT} is the port on the SERVER (the host), which is the number that
+# goes into the tracker's SMS provisioning. Traccar's H02 listener itself stays
+# on 5013 inside the container — see the traccar service.
 #
 # Traccar listens on hundreds of protocol ports by default. None of them are
 # published here; exposing them is how servers end up on botnet lists. Add a port
@@ -15,7 +21,19 @@
 # No `version:` key — it is obsolete and warns on Compose v2.
 # ---------------------------------------------------------------------------
 
-name: gpstracer
+# Deliberately not the bare product name.
+#
+# `name:` prefixes every volume this file declares, and a generic name collides
+# with any other stack on the same machine that also calls itself `gpstracer`.
+# Docker does not warn about that: it hands the Postgres container whatever
+# volume already has that name. Observed on this project before this was fixed —
+# Postgres mounted a MySQL data directory and crash-looped with
+# `chown: /var/lib/postgresql/data/mysql.sock: No such file or directory`, which
+# reads like a corruption bug rather than a naming collision.
+#
+# A distinct default makes it impossible. `-p`/COMPOSE_PROJECT_NAME still
+# overrides it, which is how a second copy on one host is kept apart.
+name: gpstracer-fleet
 
 services:
   db:
@@ -66,6 +84,10 @@ services:
       LOG_LEVEL: ${TRACCAR_LOG_LEVEL:-info}
       JAVA_OPTS: ${JAVA_OPTS:--Xms256m -Xmx1024m}
       POSITION_RETENTION_DAYS: ${POSITION_RETENTION_DAYS:-180}
+      # Address lookup for the stops and trips reports. Off by default: see the
+      # header of traccar/config/entrypoint.sh for the measurements behind that.
+      GEOCODER: ${GEOCODER:-off}
+      GEOCODER_KEY: ${GEOCODER_KEY:-}
       # Bootstrap only. See docs/DOKPLOY.md § First run.
       ALLOW_REGISTRATION: ${TRACCAR_ALLOW_REGISTRATION:-false}
     # Traccar 6.16 has no native environment-variable configuration (there is no
@@ -101,7 +123,15 @@ services:
       # the tracker in the truck reaches the server. No TLS: the protocol is a
       # plain TCP stream. Restrict with a firewall if you know your SIM's
       # provider egress ranges.
-      - "${H02_PORT:-5013}:${H02_PORT:-5013}"
+      #
+      # Host side is configurable; the container side is pinned to 5013, which is
+      # the port Traccar opens for h02 out of the box. Do NOT write
+      # `"${H02_PORT}:${H02_PORT}"` here: H02_PORT is then used for both sides,
+      # and Traccar does not read it. Point the host at any other number and the
+      # published port lands on whatever protocol Traccar does listen on there.
+      # 5093, for instance, is Traccar's *watch* port — the stack comes up
+      # healthy, accepts the tracker's connection, and silently decodes nothing.
+      - "${H02_PORT:-5013}:5013"
     healthcheck:
       test:
         [
@@ -114,6 +144,52 @@ services:
       # Generous: the first boot runs every Liquibase migration and can take a
       # while on a small VPS.
       start_period: 180s
+    networks:
+      - internal
+
+  # -------------------------------------------------------------------------
+  # Dashboard (Phase 2).
+  #
+  # The one place a human signs in. It serves the React app and proxies two
+  # upstreams from the same origin:
+  #
+  #   /api/*    -> Traccar, so the JSESSIONID cookie stays same-origin and no
+  #                CORS configuration is needed
+  #   /tacho/*  -> the tachograph API, with the SERVICE TOKEN injected server-side
+  #
+  # That second bullet is the reason this service exists. The tachograph API
+  # serves driver personal data behind a service token; if the browser called it
+  # directly it would have to hold that token, which is the same as publishing it.
+  # Here the token never leaves this container, and the identity of the human is
+  # forwarded to the tachograph service, which records it in its audit log — so
+  # there is one login, not two. See dashboard/server.mjs.
+  # -------------------------------------------------------------------------
+  dashboard:
+    build:
+      context: ./dashboard
+    image: gpstracer-dashboard:local
+    container_name: gpstracer-dashboard
+    restart: unless-stopped
+    depends_on:
+      traccar:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Europe/Rome}
+      DASHBOARD_PORT: 8083
+      # Internal network names, not the published host ports.
+      TRACCAR_INTERNAL_URL: http://traccar:${TRACCAR_WEB_PORT:-8082}
+      TACHO_INTERNAL_URL: http://tacho-api:8084
+      TACHO_API_TOKEN: ${TACHO_API_TOKEN:?set TACHO_API_TOKEN - see .env.example}
+      DASHBOARD_MAX_BODY_BYTES: ${DASHBOARD_MAX_BODY_BYTES:-16777216}
+    ports:
+      # Loopback. Dokploy's proxy terminates TLS in front of it; see docs/DOKPLOY.md.
+      - "127.0.0.1:${DASHBOARD_PORT:-8083}:8083"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8083/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
     networks:
       - internal
 
@@ -193,6 +269,44 @@ services:
       - tacho-data:/var/lib/gpstracer/tacho
     # No ports at all. The worker makes outbound database connections and nothing
     # else; it must never be reachable.
+    networks:
+      - internal
+
+  # -------------------------------------------------------------------------
+  # Fleet simulator (optional, profile "tools").
+  #
+  # Seeds a demonstration fleet through the REAL H02 protocol on 5013, so
+  # Traccar's own decoder parses it and positions arrive through the production
+  # code path. It proves the protocol listener and everything downstream of a
+  # stored position; it does NOT prove the radio link, SIM, GNSS or the device's
+  # firmware. See docs/UNIMPLEMENTED.md.
+  #
+  #   docker compose --profile tools run --rm simulator
+  #   docker compose --profile tools run --rm simulator --city rome --vehicles 4
+  #
+  # It runs on the internal network rather than from the host on purpose. The H02
+  # listener is only published to the host for the tracker itself; a simulator
+  # has no business using that path, and reaching Traccar over the stack's own
+  # network is what the API and the worker already do.
+  # -------------------------------------------------------------------------
+  simulator:
+    image: python:3.12-slim
+    profiles: ["tools"]
+    depends_on:
+      traccar:
+        condition: service_healthy
+    environment:
+      # Host names on the internal network, not the published host ports.
+      SIMULATOR_API: http://traccar:${TRACCAR_WEB_PORT:-8082}
+      H02_HOST: traccar
+      # The container-side port, not the published one, because this runs on the
+      # internal network next to Traccar.
+      H02_PORT: 5013
+      ADMIN_EMAIL: ${ADMIN_EMAIL:?set ADMIN_EMAIL - see .env.example}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD - see .env.example}
+    volumes:
+      - ./scripts:/scripts:ro
+    entrypoint: ["python", "/scripts/simulate-fleet.py"]
     networks:
       - internal
 

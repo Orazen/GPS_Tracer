@@ -43,7 +43,45 @@ Then create the first administrator — see [First run](#first-run), because
 Traccar ships with **no users at all** and the stack will look healthy while
 nobody can log in.
 
-Dashboard: `http://localhost:8082`
+| Where | URL | What it is |
+|---|---|---|
+| **Dashboard** | `http://localhost:8083` | what a person actually uses: fleet map, route history, zones, reports, tachograph |
+| Traccar's own UI | `http://localhost:8082` | break-glass administration, loopback only |
+| Tachograph API | `http://localhost:8084` | loopback only; the dashboard proxies it and holds the service token |
+
+`docker compose up -d` deploys under the compose project name `gpstracer-fleet`,
+and that name prefixes the volumes. Two copies of this project on one machine
+must use different names (`docker compose -p gpstracer-dev up -d`), or they will
+share one database. The name is deliberately not the bare product name: a generic
+one collides with any other stack that calls itself the same thing, and Docker
+gives the loser whatever volume happens to have that name. See
+[`docs/UNIMPLEMENTED.md`](docs/UNIMPLEMENTED.md) §7.
+
+---
+
+## A fleet to look at, without hardware
+
+An empty database gives you an empty map, which tells you nothing about whether
+the thing works. This seeds a demonstration fleet **through the real H02 protocol
+on the real listener**, so Traccar's own decoder produces the positions — not a
+shortcut around it:
+
+```bash
+docker compose --profile tools run --rm simulator --reset
+```
+
+It drives six trucks around a route in Milan for three hours of simulated time,
+with genuine stops at each customer site, and exits when it is done. `--reset`
+clears each vehicle's stored positions first, so a second run replaces the demo
+data instead of piling a second trail on top of it. `--help` lists the rest
+(`--city rome`, `--vehicles 4`, `--window`, `--live`).
+
+**What it proves:** the protocol listener, Traccar's H02 decoding, position
+storage, and every screen downstream of a stored position.
+**What it does not:** the radio link, the SIM and APN, GNSS reception, the
+device's own firmware, or ACC wiring. It is not a substitute for the physical
+test in [`docs/TESTING.md`](docs/TESTING.md), and
+[`docs/UNIMPLEMENTED.md`](docs/UNIMPLEMENTED.md) §1 still says so.
 
 ---
 
@@ -80,15 +118,21 @@ Reconfigured Traccar out of the box. No functionality is rebuilt.
 
 | Need | Provided by |
 |---|---|
-| Live map, all vehicles, online/offline, moving/stopped | Traccar UI |
-| Speed, ignition, last update | Traccar UI |
-| Trip history, distance, avg/max speed, duration | Traccar reports |
-| Route playback | Traccar UI |
-| Stops with duration and address | Traccar reports |
-| Geofences: depot, customer, restricted | Traccar UI + events |
-| Alerts: overspeed, geofence, offline, ignition, SOS | Traccar notifications |
+| Live map, all vehicles, online/offline, moving/stopped | **dashboard** — Fleet |
+| Speed, ignition, last update | **dashboard** — vehicle panel |
+| Trip history, distance, avg/max speed, duration | **dashboard** — History and Reports |
+| Route playback, with stops and arrivals | **dashboard** — History |
+| Stops with duration | **dashboard** — Reports ▸ Stops |
+| Geofences: depot, customer, restricted | **dashboard** — Zones, drawn and edited on the map |
+| Alerts: overspeed, geofence, offline, ignition, SOS | **dashboard** — alert feed |
 | Users and roles (admin / manager) | Traccar |
-| Excel export | Traccar reports |
+| Excel export | **dashboard** — Reports ▸ Export Excel, a real spreadsheet |
+| Italian / English | **dashboard** — language switch |
+
+Traccar does the work underneath all of that; the dashboard is the interface in
+front of it. It serves the app and proxies Traccar and the tachograph service
+from one origin, so there is one sign-in rather than three, and the tachograph
+service token never reaches the browser.
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for what is deliberately *not*
 customised, and why.
@@ -105,9 +149,11 @@ question from the tracking stack: *whose hours are these, and are they legal?*
 |---|---|
 | Secure `.DDD` upload, hash, dedupe, import history | `tacho-api` |
 | Driver-card parsing, normalised activity | `tacho-worker` (driver cards only) |
-| Activity timeline, daily and weekly summaries | `tacho` tables + API |
-| File coverage and missing-data warnings | `/api/coverage` |
-| Exportable reports with source and timestamp metadata | CSV export with a provenance header |
+| Activity timeline, daily and weekly summaries | dashboard ▸ Tachograph ▸ Activity |
+| File coverage and missing-data warnings | dashboard ▸ Tachograph ▸ Activity, from `/api/coverage` |
+| Import history, status and raw evidence | dashboard ▸ Tachograph ▸ Imports |
+| Findings, breaches and disclosed assumptions | dashboard ▸ Tachograph ▸ Findings |
+| Exportable reports with source and timestamp metadata | CSV export with a provenance header, linked from the Activity screen |
 | EU driving-time findings, versioned and traceable | `tacho/rules/driving_time.py` |
 | Restricted access and audit logging of driver data | role gating + `tacho_audit_log` |
 
@@ -131,9 +177,24 @@ Exactly three are published, and one of them is on loopback:
 
 | Port | Purpose | Exposure |
 |---|---|---|
-| `8082` | Dashboard | Loopback only - put HTTPS in front |
+| `8083` | Dashboard - the app a person uses | Loopback only - put HTTPS in front |
+| `8082` | Traccar's own UI, break-glass | Loopback only |
 | `5013` | H02 tracker protocol | Public - the tracker must reach it |
 | `8084` | Tachograph API | **Loopback only** - it serves driver personal data |
+
+`H02_PORT` is the port on the **server**, which is what goes into the tracker's
+SMS provisioning. Inside the container Traccar always listens on 5013, where it
+opens h02 by default, and the host port is mapped onto it:
+
+```yaml
+- "${H02_PORT:-5013}:5013"
+```
+
+Do not "simplify" that to `${H02_PORT}:${H02_PORT}`. Traccar does not read
+`H02_PORT`, so pointing the host at any other number lands the published port on
+whatever protocol Traccar does listen on there — 5093, for instance, is its
+*watch* listener. The stack comes up healthy, accepts the tracker's connection,
+and decodes nothing. The failure is silent, and it has already happened once.
 
 Traccar listens on ~250 protocol ports internally. The tachograph worker has no
 published port at all. **None** of the rest are published. Add one only when a
@@ -166,21 +227,25 @@ network, by Traccar and by the two tachograph containers.
 
 ```bash
 ./scripts/create-admin.sh        # first-run administrator
-./scripts/backup.sh              # PostgreSQL dump + retention
+./scripts/backup.sh              # database dump + uploaded tacho files + retention
 ./scripts/backup.sh list         # what is backed up
-./scripts/backup.sh restore FILE # restore (stops Traccar, then restarts it)
+./scripts/backup.sh restore FILE # restore both (stops Traccar, then restarts it)
 ./scripts/smoke-test.sh          # is this deployment actually usable?
 
+docker compose --profile tools run --rm simulator --reset            # demo fleet, no hardware
 docker compose run --rm tacho-worker python -m tacho.worker --once   # drain the queue
 ```
 
 Both scripts read `.env` if present but **real environment variables win**, so
-they work unchanged under Dokploy where there is no `.env`.
+they work unchanged under Dokploy where there is no `.env`. If the stack was
+brought up with a non-default project name, pass the same one to the scripts:
+`COMPOSE_PROJECT_NAME=gpstracer-dev ./scripts/smoke-test.sh`.
 
-> ⚠️ **Backups cover PostgreSQL, not the tachograph storage volume.** The
-> `tacho-data` volume holds the uploaded originals; restoring the database without
-> it leaves imports pointing at files that are gone. Back up both together. This is
-> a known gap, recorded in [`docs/UNIMPLEMENTED.md`](docs/UNIMPLEMENTED.md) §5.
+**Backups cover both stores.** Each run writes a PostgreSQL dump *and* an archive
+of the `tacho-data` volume, under one timestamp, and a restore puts both back.
+That pairing is the point: an import row references a stored file, so restoring
+the database alone leaves the tachograph screen referring to evidence that is no
+longer there. `./scripts/backup.sh list` shows the pairs.
 
 ---
 
@@ -209,14 +274,18 @@ not been measured.
 | Driving-time **validation against a reference report** | ❌ **NOT RUN** — no reference available. `validated_against_reference` is `false` everywhere |
 | Parser against a **real driver card** | ❌ **NOT RUN** — only synthetic fixtures exist |
 | Vehicle-unit / GEN2 parsing | ❌ **not implemented** — refused by design |
-| **Physical GPS tracker end-to-end on H02:5013** | ❌ **NOT RUN** — no device has ever connected |
-| **Fleet dashboard (Phase 2 UI)** | ❌ **not built** — the tachograph API exists, there is no UI in front of it |
+| **Physical GPS tracker end-to-end on H02:5013** | ❌ **NOT RUN** — no device has ever connected. The listener and decoder are exercised by `scripts/simulate-fleet.py`, and the published port was re-tested from outside the network, but the radio link, SIM and GNSS are untested |
+| **Fleet dashboard (Phase 2 UI)** | ✅ **built and verified in a browser** — Fleet, History, Zones, Reports, Tachograph and Settings, in Italian and English. `dashboard/scripts/verify.mjs` drives all of them against a seeded fleet and fails on an empty report, a corrupt export or a console error |
+| Excel export | ✅ **verified as a real spreadsheet** — the download is checked for ZIP magic, not just for its file name |
+| Fleet simulator (H02, no hardware) | ✅ **works** — 1056 fixes over three simulated hours, every packet acknowledged by Traccar's own H02 decoder |
+| Backup covering the tachograph volume | ✅ **automated** — one run writes the database dump and the uploaded-file archive together; the archive was restored into a scratch volume and matched the live one |
+| Smoke test covering the tachograph service | ✅ **extended** — health, refusal without the service token, acceptance with it, and role gating on the access log |
 | Live/remote tachograph integration | ❌ **not implemented** — investigated in [`docs/LIVE-TACHO.md`](docs/LIVE-TACHO.md) |
 | Dokploy deployment | 📄 **documented, unverified** |
-| Automated tests in CI | ❌ **not configured** — tests pass by hand, nothing runs them on push |
+| Automated tests in CI | ✅ **configured** — [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the Python suite twice (without a database, then with PostgreSQL), builds the dashboard, and asserts the compose port mappings |
 
-The short version: **the tracking infrastructure and the tachograph service are
-built and tested; the hardware and the external validation are not.**
+The short version: **the tracking infrastructure, the dashboard and the tachograph
+service are built and tested; the hardware and the external validation are not.**
 
 Order one tracker, work through [`docs/TESTING.md`](docs/TESTING.md), and only
 then buy more. Before any compliance claim, work through

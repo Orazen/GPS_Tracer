@@ -102,9 +102,53 @@ else
 fi
 
 echo
+echo "Tachograph service"
+# Uploaded driver cards are personal data, so this service is loopback-only and
+# answers only with a service token. The dashboard proxies it; a person never
+# talks to it directly.
+TACHO_BASE="http://127.0.0.1:${TACHO_API_PORT:-8084}"
+code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "${TACHO_BASE}/healthz")
+case "$code" in
+  200) pass "tacho API healthy" ;;
+  000) warn "tacho API not reachable on ${TACHO_BASE} — only expected when the stack is down" ;;
+  *)   fail "tacho API /healthz -> ${code} (expected 200)" ;;
+esac
+
+# The failure that matters: serving driver data to anyone who can reach the port.
+code=$(curl -s -o /dev/null -m 10 -w '%{http_code}' "${TACHO_BASE}/api/imports")
+case "$code" in
+  401|403) pass "tacho API refuses an unauthenticated read (${code})" ;;
+  000)     : ;;   # already reported above
+  200)     fail "tacho API served driver data with no service token" ;;
+  *)       warn "unexpected status ${code} for an unauthenticated read" ;;
+esac
+
+if [ -n "${TACHO_API_TOKEN:-}" ] && [ "${TACHO_API_TOKEN#CHANGE_ME}" = "${TACHO_API_TOKEN}" ]; then
+  code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' \
+    -H "X-Service-Token: ${TACHO_API_TOKEN}" -H 'X-Actor: smoke-test' -H 'X-Actor-Role: owner' \
+    "${TACHO_BASE}/api/imports")
+  [ "$code" = "200" ] && pass "tacho API accepts the service token as owner" \
+    || fail "tacho API rejected the service token (${code})"
+
+  # The access log is owner-only. A viewer that can read it is a role-separation
+  # bug, not a cosmetic one: it is the record of who looked at whom.
+  code=$(curl -s -o /dev/null -m 15 -w '%{http_code}' \
+    -H "X-Service-Token: ${TACHO_API_TOKEN}" -H 'X-Actor: smoke-test' -H 'X-Actor-Role: viewer' \
+    "${TACHO_BASE}/api/audit")
+  case "$code" in
+    403) pass "tacho API refuses the access log to a viewer" ;;
+    200) fail "a viewer role can read the access log" ;;
+    *)   warn "access log -> ${code} for a viewer (expected 403)" ;;
+  esac
+else
+  warn "TACHO_API_TOKEN unset — skipping the authenticated tachograph checks"
+fi
+
+echo
 echo "Database"
 if command -v docker >/dev/null 2>&1; then
-  PROJECT="${COMPOSE_PROJECT_NAME:-gpstracer}"
+  # Must match `name:` in docker-compose.yml. See the comment there.
+  PROJECT="${COMPOSE_PROJECT_NAME:-gpstracer-fleet}"
   # Resolve the db container id from compose. Note: `ps --status running` is not
   # available on every compose version and fails silently here, so check for the
   # id and then ask Docker whether that container is actually up.

@@ -7,6 +7,39 @@ Record the result of every line. A tick that nobody wrote down is not evidence.
 
 ---
 
+## What can be checked without the tracker
+
+Do this first. If the stack cannot store a position sent by software speaking the
+same protocol, a tracker will not fix it, and you will spend a day finding that out
+in a truck.
+
+```bash
+# A whole fleet through the real listener, in seconds, with no hardware at all.
+docker compose --profile tools run --rm simulator --reset
+
+./scripts/smoke-test.sh                    # is this deployment usable?
+
+cd tacho      && python -m pytest tests/ -q    # 291 tests, no database needed
+cd tacho      && TACHO_TEST_DATABASE_URL=... python -m pytest tests/ -q   # 327 with one
+
+cd dashboard  && node scripts/verify.mjs       # every screen, in a real browser
+```
+
+`scripts/simulate-fleet.py` speaks H02 to port 5013, so Traccar's **own** decoder
+creates the positions. A pass therefore covers the listener, the decoder, position
+storage and every screen downstream of a stored position. It covers nothing about
+the radio link, the SIM and APN, GNSS reception or the device's firmware — which
+is why the rest of this document still has to be worked through with a tracker in
+hand.
+
+`dashboard/scripts/verify.mjs` needs a running stack with seeded data and Chromium
+(`npx playwright install chromium`). It signs in, walks all six screens, clicks
+through every report, checks that the Excel download really is a spreadsheet, and
+fails on an empty report, a console error or a failed request. Screenshots land in
+`dashboard/shots/`.
+
+---
+
 ## A. Bench tests
 
 Tracker on a bench supply, ACC on a switch, dashboard open, and the server log
