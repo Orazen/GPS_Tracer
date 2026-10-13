@@ -1,0 +1,14 @@
+# Tachograph service runtime dependencies.
+#
+# Deliberately small. The parser, the activity model and the driving-time rules
+# engine are pure standard library so they can be tested with no third-party
+# package installed at all (see tests/ and docs/TACHO-SERVICE.md).
+#
+# Versions are pinned: this container handles driver personal data, so an
+# unattended dependency bump is not acceptable.
+
+fastapi==0.128.8
+uvicorn[standard]==0.38.0
+psycopg[binary]==3.2.9
+python-multipart==0.0.20
+pydantic==2.11.9

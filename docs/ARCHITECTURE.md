@@ -138,7 +138,13 @@ events.
 (`/api/session?token=...`) and receives position updates live. Report screens use
 the REST API.
 
-**Nothing else runs.** There is no queue, no cache, no cron and no worker.
+**Positions out (tachograph).** Driver-card downloads are uploaded to `tacho-api`,
+queued in `tacho_imports`, parsed by `tacho-worker`, and normalised into
+`tacho_activity_days` / `tacho_activity_changes`. The tachograph service never writes
+to a `tc_` table, and Traccar never reads a `tacho_` table.
+
+There is no cache and no cron. The one background process is `tacho-worker`, which
+polls its own table.
 
 ---
 
@@ -159,6 +165,45 @@ Traccar creates its own schema on first boot. The tables that matter:
 `tc_positions` is where the storage cost lives: a truck reporting every 30
 seconds generates ~2,900 rows/day, ~1M rows/year. Retention is therefore
 configurable — see [`SECURITY.md`](SECURITY.md#data-retention).
+
+---
+
+## The tachograph service
+
+Everything above is Traccar configuration. The tachograph service is the one part of
+this repository that is **new code**, because Traccar cannot answer the question it
+answers: Traccar knows where a vehicle went, not who was driving it or how many hours
+they are owed.
+
+| Component | Choice | Why |
+|---|---|---|
+| Language | Python 3.12 | The parser and the rules engine are pure standard library — no third-party licence or upgrade reaches the code that decides somebody's hours |
+| HTTP | FastAPI | Small surface, typed request models, and a dependency system that keeps role gating in one place |
+| Database | The same PostgreSQL | Tables in the `tacho_` namespace, so there is no second database to back up, size, monitor or secure |
+| Queue | `tacho_imports` + `FOR UPDATE SKIP LOCKED` | A broker would be a second moving part at a throughput that does not need one |
+| Process split | `tacho-api` + `tacho-worker`, one image | The spec requires parsing out of the web request; two processes is the honest way to do it |
+| Storage | Content-addressed private volume | Originals preserved and hashed, **no URL that returns them** |
+| Migrations | Ordered immutable `.sql` + checksum ledger | Editing an applied migration stops the service instead of silently skipping |
+
+### Why the parser is in this repository
+
+See [`LICENCES.md`](LICENCES.md) §5. In short: every established `.DDD` parser is
+either copyleft (ReadESM, GPL; `tachoparser`, AGPL-3.0) or a Go/Ruby/C# package that
+cannot be imported here. Rather than inherit an obligation or guess at offsets, the
+GEN1 driver-card format was implemented from the regulation, in this repository, with
+the parts that could not be verified explicitly refused rather than guessed.
+
+### The one architectural rule worth stating
+
+**A gap in the records is `unknown`; it is never `rest`.** Every layer is built
+around that: the parser refuses to bridge a gap in the cyclic activity buffer, the
+rules engine refuses to bridge a gap between records, and the API's coverage endpoint
+tells the caller which days are missing before it shows any rest finding. An engine
+that silently fills a gap produces a confidently wrong compliance number, which is
+the worst possible failure for this kind of software.
+
+See [`TACHO-SERVICE.md`](TACHO-SERVICE.md), [`DRIVING-TIME.md`](DRIVING-TIME.md) and
+[`UNIMPLEMENTED.md`](UNIMPLEMENTED.md).
 
 ---
 

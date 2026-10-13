@@ -33,3 +33,25 @@ branding/assets/*
 Thumbs.db
 *.swp
 *~
+
+# Tachograph service (tacho/). Local Python state must never be committed.
+# These are plain patterns on purpose: `tacho/**/__pycache__/` did not match at
+# depth in practice, and a pattern that looks right but does not match is worse
+# than no pattern at all.
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.venv/
+venv/
+
+# Uploaded tachograph files and generated fixtures. These are driver personal
+# data or stand in for it: keep both out of Git, always.
+*.ddd
+*.esm
+!tacho/tests/**
+tacho/objects/
+
+# Local storage the tests and a development run may create.
+tacho-data/
+.local-tacho/

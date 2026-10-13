@@ -117,6 +117,85 @@ services:
     networks:
       - internal
 
+  # -------------------------------------------------------------------------
+  # Tachograph service (Phase 3-5).
+  #
+  # Two containers from one image, deliberately: the API accepts uploads, the
+  # worker parses them. The specification requires parsing to be kept out of the
+  # web request process, and separate processes are the honest way to do that —
+  # a parser bug, a hang, or an OOM cannot then take the API down with it.
+  #
+  # They share the same PostgreSQL instance as Traccar and keep their tables in
+  # the tacho_ namespace, so there is no second database to back up, monitor or
+  # size. See docs/TACHO-SERVICE.md.
+  # -------------------------------------------------------------------------
+  tacho-api:
+    build:
+      context: ./tacho
+    image: gpstracer-tacho:local
+    container_name: gpstracer-tacho-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Europe/Rome}
+      TACHO_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      TACHO_API_TOKEN: ${TACHO_API_TOKEN:?set TACHO_API_TOKEN - see .env.example}
+      TACHO_STORAGE_DIR: /var/lib/gpstracer/tacho
+      TACHO_ALLOWED_ORIGINS: ${TACHO_ALLOWED_ORIGINS:-http://127.0.0.1:8083}
+      TACHO_MAX_UPLOAD_BYTES: ${TACHO_MAX_UPLOAD_BYTES:-8388608}
+      TACHO_LOG_LEVEL: ${TRACCAR_LOG_LEVEL:-info}
+    volumes:
+      # Uploaded driver cards. A named volume, never a bind mount into the
+      # repository: these are personal data and must not sit next to the source.
+      - tacho-data:/var/lib/gpstracer/tacho
+    ports:
+      # Loopback only. This API serves driver personal data; the dashboard reaches
+      # it over the internal network, and nothing outside the host should.
+      - "127.0.0.1:${TACHO_API_PORT:-8084}:8084"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8084/healthz',timeout=5)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - internal
+
+  tacho-worker:
+    build:
+      context: ./tacho
+    image: gpstracer-tacho:local
+    container_name: gpstracer-tacho-worker
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Europe/Rome}
+      TACHO_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      # The worker never receives a request, so it does not need the API token to
+      # serve anyone — but the shared configuration validation requires one, and
+      # having a token it never uses is better than a code path that skips the
+      # check when no token is present.
+      TACHO_API_TOKEN: ${TACHO_API_TOKEN:?set TACHO_API_TOKEN - see .env.example}
+      TACHO_STORAGE_DIR: /var/lib/gpstracer/tacho
+      TACHO_WORKER_POLL_SECONDS: ${TACHO_WORKER_POLL_SECONDS:-3}
+      TACHO_WORKER_LEASE_MINUTES: ${TACHO_WORKER_LEASE_MINUTES:-15}
+      TACHO_WORKER_MAX_ATTEMPTS: ${TACHO_WORKER_MAX_ATTEMPTS:-3}
+      # Optional: an external parser for vehicle-unit downloads and GEN2 files.
+      # Leave empty to run the clean-room GEN1 person-card parser only.
+      TACHO_EXTERNAL_PARSER: ${TACHO_EXTERNAL_PARSER:-}
+      TACHO_LOG_LEVEL: ${TRACCAR_LOG_LEVEL:-info}
+    command: ["python", "-m", "tacho.worker"]
+    volumes:
+      - tacho-data:/var/lib/gpstracer/tacho
+    # No ports at all. The worker makes outbound database connections and nothing
+    # else; it must never be reachable.
+    networks:
+      - internal
+
 networks:
   internal:
     driver: bridge
@@ -127,3 +206,7 @@ volumes:
   traccar-logs:
   # Rendered config lives in a named volume, not the repo.
   traccar-conf:
+  # Uploaded tachograph files. Content-addressed inside; see tacho/README.md.
+  # NOTE: this volume and the tacho_ tables must be backed up together, or an
+  # import will reference a file that is no longer there.
+  tacho-data:

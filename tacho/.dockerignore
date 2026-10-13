@@ -1,0 +1,11 @@
+# Never ship local state into an image.
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.pytest_cache
+tests/
+*.sql.gz
+*.dump
+.env
+.env.*
