@@ -28,6 +28,14 @@ from ..config import Settings, load_settings
 from ..db import Database, MigrationError
 from ..importer import TachographImporter
 from ..parsers import default_registry
+from ..registry import (
+    DriverRegistry,
+    DuplicateExternalRef,
+    InvalidAssignment,
+    RegistryError,
+    UnknownCard,
+    UnknownDriver,
+)
 from ..repository import ImportRepository
 from ..rules import driving_time
 from ..storage import ObjectStore
@@ -39,6 +47,66 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
+
+
+class PersonRequest(BaseModel):
+    display_name: str = Field(..., min_length=1, max_length=120)
+    external_ref: Optional[str] = Field(
+        default=None,
+        max_length=120,
+        description="The identifier this employer already uses for the person (payroll or badge number).",
+    )
+    card_number: Optional[str] = Field(
+        default=None,
+        max_length=64,
+        description="Optional card to link to the new person in the same action.",
+    )
+
+
+class CardAssignmentRequest(BaseModel):
+    driver_id: int = Field(..., ge=1)
+    card_number: str = Field(..., min_length=1, max_length=64)
+    assigned_from: Optional[_dt.date] = None
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class VehicleAssignmentRequest(BaseModel):
+    driver_id: int = Field(..., ge=1)
+    vehicle_ref: str = Field(
+        ...,
+        min_length=1,
+        max_length=120,
+        description=(
+            "Stable identifier of the vehicle. Use the tracker's own unique id, "
+            "which survives renaming the vehicle in the tracker console."
+        ),
+    )
+    assigned_from: Optional[_dt.date] = None
+    note: Optional[str] = Field(default=None, max_length=500)
+
+
+class CloseAssignmentRequest(BaseModel):
+    assigned_to: Optional[_dt.date] = None
+
+
+class ActiveRequest(BaseModel):
+    active: bool
+
+
+def _registry_failure(exc: RegistryError) -> HTTPException:
+    """Map a registry failure onto a status a caller can act on.
+
+    404 for "that person or card does not exist", 409 for "that identifier is
+    taken", 400 for everything else. Kept in one place so a new registry error
+    cannot silently become a 500 by being forgotten here.
+    """
+    if isinstance(exc, (UnknownDriver, UnknownCard)):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    if isinstance(exc, DuplicateExternalRef):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, InvalidAssignment):
+        return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
 
 class CalculationRequest(BaseModel):
@@ -86,6 +154,7 @@ def create_app(
     registry = default_registry(resolved.external_parser)
     importer = TachographImporter(database, store, registry, resolved)
     repository = ImportRepository(database)
+    driver_registry = DriverRegistry(database)
     authenticator = Authenticator(resolved.api_token, resolved.allow_anonymous)
     authenticate = make_dependencies(authenticator, resolved.allow_anonymous)
 
@@ -250,6 +319,193 @@ def create_app(
             source_ip=actor.source_ip,
         )
         return {"count": len(rows), "driver_cards": _serialise(rows)}
+
+    # -- driver registry and assignments ----------------------------------
+    # The registry answers "who is driving which truck", which is a different
+    # question from the one /api/drivers answers (which CARDS this service has
+    # seen). People live at /api/people rather than at /api/drivers because that
+    # route is already published and its client reads `driver_cards`: renaming a
+    # shipped endpoint to make the newer model tidier would break the older caller
+    # for a cosmetic gain.
+    @app.get("/api/people")
+    async def list_people(actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+        # A name is personal data. Restricted and audited, like the card registry.
+        require_driver_data(actor)
+        people = driver_registry.list_people()
+        importer.audit(
+            actor=actor.name,
+            actor_role=actor.role,
+            action="registry.people.list",
+            subject_type="driver_registry",
+            detail={"count": len(people)},
+            source_ip=actor.source_ip,
+        )
+        return {"count": len(people), "people": _serialise(people)}
+
+    @app.post("/api/people", status_code=status.HTTP_201_CREATED)
+    async def create_person(
+        payload: PersonRequest, actor: Actor = Depends(authenticate)
+    ) -> Dict[str, Any]:
+        require_driver_data(actor)
+        try:
+            person = driver_registry.create_person(
+                payload.display_name, payload.external_ref
+            )
+            if payload.card_number:
+                driver_registry.assign_card(person["id"], payload.card_number)
+        except RegistryError as exc:
+            raise _registry_failure(exc) from exc
+        importer.audit(
+            actor=actor.name,
+            actor_role=actor.role,
+            action="registry.person.create",
+            subject_type="driver",
+            subject_id=str(person["id"]),
+            detail={
+                "external_ref": person.get("external_ref"),
+                "card_linked": bool(payload.card_number),
+            },
+            source_ip=actor.source_ip,
+        )
+        # Re-read so the caller gets the person as the list will show them, card
+        # included: a create that returns a differently-shaped object from a list
+        # is how a UI ends up with two code paths for one record.
+        refreshed = [p for p in driver_registry.list_people() if p["id"] == person["id"]]
+        return _serialise(refreshed[0] if refreshed else person)
+
+    @app.post("/api/people/{driver_id}/active")
+    async def set_person_active(
+        driver_id: int, payload: ActiveRequest, actor: Actor = Depends(authenticate)
+    ) -> Dict[str, Any]:
+        """Take a person out of the assignable list, or put them back.
+
+        Deactivating does not close their open assignment: the two are different
+        facts -- "left the company" and "handed the truck back" -- and ending an
+        assignment is recorded as its own change so the history reads correctly.
+        """
+        require_driver_data(actor)
+        try:
+            person = driver_registry.set_active(driver_id, payload.active)
+        except RegistryError as exc:
+            raise _registry_failure(exc) from exc
+        importer.audit(
+            actor=actor.name,
+            actor_role=actor.role,
+            action="registry.person.active" if payload.active else "registry.person.inactive",
+            subject_type="driver",
+            subject_id=str(driver_id),
+            source_ip=actor.source_ip,
+        )
+        return _serialise(person)
+
+    @app.get("/api/card-assignments")
+    async def list_card_assignments(
+        driver_id: Optional[int] = None,
+        limit: int = Query(default=200, ge=1, le=500),
+        actor: Actor = Depends(authenticate),
+    ) -> Dict[str, Any]:
+        require_driver_data(actor)
+        rows = driver_registry.list_card_assignments(driver_id=driver_id, limit=limit)
+        return {"count": len(rows), "card_assignments": _serialise(rows)}
+
+    @app.post("/api/card-assignments", status_code=status.HTTP_201_CREATED)
+    async def assign_card(
+        payload: CardAssignmentRequest, actor: Actor = Depends(authenticate)
+    ) -> Dict[str, Any]:
+        require_driver_data(actor)
+        try:
+            row = driver_registry.assign_card(
+                payload.driver_id,
+                payload.card_number,
+                payload.assigned_from,
+                payload.note,
+            )
+        except RegistryError as exc:
+            raise _registry_failure(exc) from exc
+        importer.audit(
+            actor=actor.name,
+            actor_role=actor.role,
+            action="registry.card.assign",
+            subject_type="driver",
+            subject_id=str(payload.driver_id),
+            detail={"assignment_id": row["id"], "assigned_from": str(row["assigned_from"])},
+            source_ip=actor.source_ip,
+        )
+        return _serialise(row)
+
+    @app.get("/api/vehicle-assignments")
+    async def list_vehicle_assignments(
+        driver_id: Optional[int] = None,
+        vehicle_ref: Optional[str] = None,
+        limit: int = Query(default=200, ge=1, le=500),
+        actor: Actor = Depends(authenticate),
+    ) -> Dict[str, Any]:
+        require_driver_data(actor)
+        rows = driver_registry.list_vehicle_assignments(
+            driver_id=driver_id, vehicle_ref=vehicle_ref, limit=limit
+        )
+        return {"count": len(rows), "vehicle_assignments": _serialise(rows)}
+
+    @app.post("/api/vehicle-assignments", status_code=status.HTTP_201_CREATED)
+    async def assign_vehicle(
+        payload: VehicleAssignmentRequest, actor: Actor = Depends(authenticate)
+    ) -> Dict[str, Any]:
+        """Record that a driver is in a vehicle from a given date.
+
+        The previous assignment for that driver is closed rather than deleted, so
+        the answer to "who was in that truck last month" survives this change.
+        """
+        require_driver_data(actor)
+        try:
+            row = driver_registry.assign_vehicle(
+                payload.driver_id,
+                payload.vehicle_ref,
+                payload.assigned_from,
+                payload.note,
+            )
+        except RegistryError as exc:
+            raise _registry_failure(exc) from exc
+        importer.audit(
+            actor=actor.name,
+            actor_role=actor.role,
+            action="registry.assignment.create",
+            subject_type="driver",
+            subject_id=str(payload.driver_id),
+            detail={
+                "assignment_id": row["id"],
+                "vehicle_ref": row["vehicle_ref"],
+                # The vehicle itself is not personal data and is worth keeping:
+                # "who moved this driver between trucks, and when" is the
+                # question an access review asks.
+                "assigned_from": str(row["assigned_from"]),
+            },
+            source_ip=actor.source_ip,
+        )
+        return _serialise(row)
+
+    @app.post("/api/vehicle-assignments/{assignment_id}/close")
+    async def close_vehicle_assignment(
+        assignment_id: int,
+        payload: CloseAssignmentRequest,
+        actor: Actor = Depends(authenticate),
+    ) -> Dict[str, Any]:
+        require_driver_data(actor)
+        try:
+            row = driver_registry.close_vehicle_assignment(
+                assignment_id, payload.assigned_to
+            )
+        except RegistryError as exc:
+            raise _registry_failure(exc) from exc
+        importer.audit(
+            actor=actor.name,
+            actor_role=actor.role,
+            action="registry.assignment.close",
+            subject_type="driver",
+            subject_id=str(row["driver_id"]),
+            detail={"assignment_id": assignment_id, "assigned_to": str(row["assigned_to"])},
+            source_ip=actor.source_ip,
+        )
+        return _serialise(row)
 
     @app.get("/api/days")
     async def list_days(

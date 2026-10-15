@@ -40,6 +40,14 @@ from tacho.importer import (
     TachographImporter,
 )
 from tacho.parsers import default_registry
+from tacho.registry import (
+    DriverRegistry,
+    DuplicateExternalRef,
+    InvalidAssignment,
+    UnknownCard,
+    UnknownDriver,
+    open_vehicle_of,
+)
 from tacho.repository import ImportRepository
 from tacho.rules import driving_time
 from tacho.storage import ObjectStore
@@ -821,3 +829,308 @@ class TestApiWorkflow:
         )
         rows = ImportRepository(clean_db).audit_trail(subject_type="import")
         assert any(row["action"] == "import.ingest" for row in rows)
+
+
+# ---------------------------------------------------------------------------
+# Driver registry and assignments
+#
+# The registry is the answer to "who is driving which truck". What these tests
+# establish, in order of how much they would hurt if they were wrong:
+#
+#   * a closed assignment is never deleted, so a past date stays answerable;
+#   * a driver cannot be recorded in two vehicles at once, and the DATABASE says
+#     so rather than a route handler remembering to;
+#   * a truck CAN have two drivers in it, because Art 8(5) multi-manning is real
+#     and a constraint that forbids the correct case would be worse than none;
+#   * every write and every read of a name is audited with actor and role.
+# ---------------------------------------------------------------------------
+
+
+class TestDriverRegistryPersistence:
+    def _card(self, db, number: str = "IT0000000000000001") -> None:
+        """A card in the registry, the way an import would have put it there."""
+        db.execute(
+            """
+            INSERT INTO tacho_driver_cards (card_number, holder_surname, holder_first_names)
+            VALUES (%s, 'Rossi', 'Giuseppe')
+            ON CONFLICT (card_number) DO NOTHING
+            """,
+            (number,),
+        )
+
+    def test_a_new_person_appears_with_nothing_attached(self, clean_db):
+        registry = DriverRegistry(clean_db)
+        person = registry.create_person("Giuseppe Rossi")
+        listed = registry.list_people()
+        assert [row["display_name"] for row in listed] == ["Giuseppe Rossi"]
+        assert listed[0]["card_number"] is None
+        assert listed[0]["vehicle_ref"] is None
+        assert listed[0]["active"] is True
+        assert person["id"] == listed[0]["id"]
+
+    def test_an_external_ref_can_only_be_used_once(self, clean_db):
+        registry = DriverRegistry(clean_db)
+        registry.create_person("Giuseppe Rossi", "payroll-1001")
+        with pytest.raises(DuplicateExternalRef):
+            registry.create_person("Another Person", "payroll-1001")
+
+    def test_a_blank_name_is_refused(self, clean_db):
+        registry = DriverRegistry(clean_db)
+        with pytest.raises(InvalidAssignment):
+            registry.create_person("   ")
+
+    def test_assigning_a_card_links_it_to_the_person(self, clean_db):
+        registry = DriverRegistry(clean_db)
+        self._card(clean_db)
+        person = registry.create_person("Giuseppe Rossi")
+        registry.assign_card(person["id"], "IT0000000000000001")
+        assert registry.list_people()[0]["card_number"] == "IT0000000000000001"
+
+    def test_a_card_that_was_never_imported_cannot_be_linked(self, clean_db):
+        """The card registry is built by imports; linking to an unseen card would
+        be a reference to nothing, so it is refused rather than stored."""
+        registry = DriverRegistry(clean_db)
+        person = registry.create_person("Giuseppe Rossi")
+        with pytest.raises(UnknownCard):
+            registry.assign_card(person["id"], "IT9999999999999999")
+
+    def test_reissuing_a_card_closes_the_old_assignment_instead_of_deleting_it(
+        self, clean_db
+    ):
+        registry = DriverRegistry(clean_db)
+        self._card(clean_db, "IT0000000000000001")
+        self._card(clean_db, "IT0000000000000002")
+        person = registry.create_person("Giuseppe Rossi")
+
+        first = _dt.date(2026, 9, 1)
+        second = _dt.date(2026, 10, 1)
+        registry.assign_card(person["id"], "IT0000000000000001", assigned_from=first)
+        registry.assign_card(person["id"], "IT0000000000000002", assigned_from=second)
+
+        rows = registry.list_card_assignments(driver_id=person["id"])
+        assert len(rows) == 2, "the replaced card assignment must stay on record"
+        closed = [r for r in rows if r["assigned_to"] is not None]
+        open_rows = [r for r in rows if r["assigned_to"] is None]
+        assert len(closed) == 1 and len(open_rows) == 1
+        assert closed[0]["card_number"] == "IT0000000000000001"
+        # Inclusive end: the new assignment starts the day after the old one ends.
+        assert closed[0]["assigned_to"] == second - _dt.timedelta(days=1)
+        assert open_rows[0]["card_number"] == "IT0000000000000002"
+
+    def test_a_card_can_only_be_in_one_hand_at_a_time(self, clean_db):
+        registry = DriverRegistry(clean_db)
+        self._card(clean_db)
+        one = registry.create_person("First Holder")
+        two = registry.create_person("Second Holder")
+        registry.assign_card(one["id"], "IT0000000000000001")
+        registry.assign_card(two["id"], "IT0000000000000001")
+        by_driver = {
+            row["driver_id"]: row
+            for row in registry.list_card_assignments()
+        }
+        assert by_driver[one["id"]]["assigned_to"] is not None
+        assert by_driver[two["id"]]["assigned_to"] is None
+
+    def test_assigning_a_vehicle_closes_the_previous_assignment(self, clean_db):
+        registry = DriverRegistry(clean_db)
+        person = registry.create_person("Giuseppe Rossi")
+
+        august = _dt.date(2026, 8, 1)
+        september = _dt.date(2026, 9, 1)
+        registry.assign_vehicle(person["id"], "868000000000001", assigned_from=august)
+        registry.assign_vehicle(person["id"], "868000000000002", assigned_from=september)
+
+        rows = registry.list_vehicle_assignments(driver_id=person["id"])
+        assert len(rows) == 2
+        open_rows = [r for r in rows if r["assigned_to"] is None]
+        assert len(open_rows) == 1
+        assert open_rows[0]["vehicle_ref"] == "868000000000002"
+        assert open_rows[0]["assigned_from"] == september
+        closed = [r for r in rows if r["assigned_to"] is not None][0]
+        assert closed["assigned_to"] == september - _dt.timedelta(days=1)
+
+    def test_the_database_refuses_two_open_assignments_for_one_driver(self, clean_db):
+        """The invariant is not a convention the API is trusted to keep."""
+        registry = DriverRegistry(clean_db)
+        person = registry.create_person("Giuseppe Rossi")
+        registry.assign_vehicle(person["id"], "868000000000001")
+        with pytest.raises(Exception) as excinfo:
+            clean_db.execute(
+                """
+                INSERT INTO tacho_vehicle_assignments (driver_id, vehicle_ref, assigned_from)
+                VALUES (%s, '868000000000002', %s)
+                """,
+                (person["id"], _dt.date(2026, 9, 1)),
+            )
+        assert "tacho_vehicle_assignments_one_open_per_driver" in str(excinfo.value)
+
+    def test_a_truck_may_hold_two_drivers_at_once(self, clean_db):
+        """Art 8(5) multi-manning. A unique index on the vehicle would make the
+        correct case impossible to record, so there deliberately is not one."""
+        registry = DriverRegistry(clean_db)
+        one = registry.create_person("Driver One")
+        two = registry.create_person("Driver Two")
+        registry.assign_vehicle(one["id"], "868000000000001")
+        registry.assign_vehicle(two["id"], "868000000000001")
+        open_in_truck = open_vehicle_of(registry.list_people())["868000000000001"]
+        assert sorted(open_in_truck) == ["Driver One", "Driver Two"]
+
+    def test_a_same_day_reassignment_keeps_the_check_constraint_satisfied(self, clean_db):
+        """A reassignment on the day the previous one started must not try to
+        close a row before it opened."""
+        registry = DriverRegistry(clean_db)
+        person = registry.create_person("Giuseppe Rossi")
+        same_day = _dt.date(2026, 9, 1)
+        registry.assign_vehicle(person["id"], "868000000000001", assigned_from=same_day)
+        registry.assign_vehicle(person["id"], "868000000000002", assigned_from=same_day)
+        rows = registry.list_vehicle_assignments(driver_id=person["id"])
+        assert len(rows) == 2
+        closed = [r for r in rows if r["assigned_to"] is not None][0]
+        assert closed["assigned_to"] == closed["assigned_from"] == same_day
+        assert [r for r in rows if r["assigned_to"] is None][0]["vehicle_ref"] == "868000000000002"
+
+    def test_an_assignment_can_be_closed_without_naming_a_replacement(self, clean_db):
+        registry = DriverRegistry(clean_db)
+        person = registry.create_person("Giuseppe Rossi")
+        row = registry.assign_vehicle(person["id"], "868000000000001", assigned_from=_dt.date(2026, 9, 1))
+        closed = registry.close_vehicle_assignment(row["id"], _dt.date(2026, 9, 30))
+        assert closed["assigned_to"] == _dt.date(2026, 9, 30)
+        assert registry.list_people()[0]["vehicle_ref"] is None
+
+    def test_closing_an_assignment_that_is_already_closed_is_refused(self, clean_db):
+        registry = DriverRegistry(clean_db)
+        person = registry.create_person("Giuseppe Rossi")
+        row = registry.assign_vehicle(person["id"], "868000000000001")
+        registry.close_vehicle_assignment(row["id"])
+        with pytest.raises(InvalidAssignment):
+            registry.close_vehicle_assignment(row["id"])
+
+    def test_assigning_an_unknown_person_is_refused(self, clean_db):
+        registry = DriverRegistry(clean_db)
+        with pytest.raises(UnknownDriver):
+            registry.assign_vehicle(9999, "868000000000001")
+
+    def test_deactivating_a_person_does_not_close_their_assignment(self, clean_db):
+        """Two different facts: left the company, and handed the truck back."""
+        registry = DriverRegistry(clean_db)
+        person = registry.create_person("Giuseppe Rossi")
+        registry.assign_vehicle(person["id"], "868000000000001")
+        registry.set_active(person["id"], False)
+        listed = registry.list_people()[0]
+        assert listed["active"] is False
+        assert listed["vehicle_ref"] == "868000000000001"
+
+
+class TestRegistryApi:
+    def _person(self, client, name="Giuseppe Rossi", **extra):
+        response = client.post("/api/people", json={"display_name": name, **extra})
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    def test_a_viewer_may_not_read_the_registry(self, viewer_client):
+        response = viewer_client.get("/api/people")
+        assert response.status_code == 403
+        assert "may not read driver personal data" in response.json()["detail"]
+
+    def test_a_viewer_may_not_assign(self, viewer_client):
+        assert viewer_client.post(
+            "/api/vehicle-assignments", json={"driver_id": 1, "vehicle_ref": "868"}
+        ).status_code == 403
+
+    def test_a_person_is_created_and_can_be_assigned_a_vehicle(self, anonymous_client):
+        person = self._person(anonymous_client)
+        response = anonymous_client.post(
+            "/api/vehicle-assignments",
+            json={
+                "driver_id": person["id"],
+                "vehicle_ref": "868000000000001",
+                "assigned_from": "2026-09-01",
+                "note": "night shift",
+            },
+        )
+        assert response.status_code == 201, response.text
+        assignment = response.json()
+        assert assignment["assigned_from"] == "2026-09-01"
+        assert assignment["assigned_to"] is None
+
+        listed = anonymous_client.get("/api/people").json()["people"]
+        assert listed[0]["vehicle_ref"] == "868000000000001"
+
+        history = anonymous_client.get(
+            "/api/vehicle-assignments?driver_id=%d" % person["id"]
+        ).json()["vehicle_assignments"]
+        assert len(history) == 1
+
+    def test_a_duplicate_external_ref_is_a_conflict_not_a_500(self, anonymous_client):
+        self._person(anonymous_client, external_ref="payroll-1001")
+        response = anonymous_client.post(
+            "/api/people", json={"display_name": "Someone Else", "external_ref": "payroll-1001"}
+        )
+        assert response.status_code == 409
+
+    def test_an_unknown_card_is_a_404(self, anonymous_client):
+        person = self._person(anonymous_client)
+        response = anonymous_client.post(
+            "/api/card-assignments",
+            json={"driver_id": person["id"], "card_number": "IT9999999999999999"},
+        )
+        assert response.status_code == 404
+        assert "not in the card registry" in response.json()["detail"]
+
+    def test_an_unknown_driver_is_a_404(self, anonymous_client):
+        response = anonymous_client.post(
+            "/api/vehicle-assignments", json={"driver_id": 4242, "vehicle_ref": "868"}
+        )
+        assert response.status_code == 404
+
+    def test_an_empty_vehicle_ref_is_a_422(self, anonymous_client):
+        person = self._person(anonymous_client)
+        response = anonymous_client.post(
+            "/api/vehicle-assignments", json={"driver_id": person["id"], "vehicle_ref": ""}
+        )
+        assert response.status_code == 422
+
+    def test_an_empty_display_name_is_a_422(self, anonymous_client):
+        assert anonymous_client.post("/api/people", json={"display_name": ""}).status_code == 422
+
+    def test_closing_an_assignment_that_is_not_open_is_a_400(self, anonymous_client):
+        person = self._person(anonymous_client)
+        row = anonymous_client.post(
+            "/api/vehicle-assignments",
+            json={"driver_id": person["id"], "vehicle_ref": "868000000000001"},
+        ).json()
+        assert anonymous_client.post(
+            "/api/vehicle-assignments/%d/close" % row["id"], json={}
+        ).status_code == 200
+        assert anonymous_client.post(
+            "/api/vehicle-assignments/%d/close" % row["id"], json={}
+        ).status_code == 400
+
+    def test_a_card_from_the_registry_can_be_linked_at_creation(self, anonymous_client, clean_db):
+        clean_db.execute(
+            "INSERT INTO tacho_driver_cards (card_number) VALUES ('IT0000000000000001') "
+            "ON CONFLICT (card_number) DO NOTHING"
+        )
+        person = self._person(anonymous_client, card_number="IT0000000000000001")
+        assert person["card_number"] == "IT0000000000000001"
+
+    def test_writes_and_reads_of_names_are_audited(self, anonymous_client, clean_db):
+        person = self._person(anonymous_client)
+        anonymous_client.post(
+            "/api/vehicle-assignments",
+            json={"driver_id": person["id"], "vehicle_ref": "868000000000001"},
+        )
+        anonymous_client.get("/api/people")
+
+        trail = ImportRepository(clean_db).audit_trail()
+        actions = {row["action"] for row in trail}
+        assert {
+            "registry.person.create",
+            "registry.assignment.create",
+            "registry.people.list",
+        } <= actions
+        entry = [row for row in trail if row["action"] == "registry.assignment.create"][0]
+        assert entry["actor"] == "test-owner"
+        assert entry["actor_role"] == "owner"
+        assert entry["subject_id"] == str(person["id"])
+        assert entry["detail"]["vehicle_ref"] == "868000000000001"

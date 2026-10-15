@@ -104,7 +104,15 @@ role resolves to `viewer`, never to a privileged one.
 | `GET` | `/api/imports` | owner, fleet_manager | Import history, filterable by status/card/date. |
 | `GET` | `/api/imports/{id}` | owner, fleet_manager | One import: status, warnings, evidence, day count. |
 | `GET` | `/api/imports/{id}/timeline` | owner, fleet_manager | Every activity change in the file. |
-| `GET` | `/api/drivers` | owner, fleet_manager | Driver-card registry. **Audited.** |
+| `GET` | `/api/drivers` | owner, fleet_manager | Driver-**card** registry. **Audited.** |
+| `GET` | `/api/people` | owner, fleet_manager | The people: name, employer reference, current card, current vehicle. **Audited.** |
+| `POST` | `/api/people` | owner, fleet_manager | Register a person; optionally links a card from the registry in the same call. **Audited.** |
+| `POST` | `/api/people/{id}/active` | owner, fleet_manager | Take a person out of the assignable list, or put them back. **Audited.** |
+| `GET` | `/api/card-assignments` | owner, fleet_manager | Who held which card, and when. |
+| `POST` | `/api/card-assignments` | owner, fleet_manager | Link a card to a person, closing what it replaces. **Audited.** |
+| `GET` | `/api/vehicle-assignments` | owner, fleet_manager | Who drove which vehicle, open rows first. |
+| `POST` | `/api/vehicle-assignments` | owner, fleet_manager | Record that a driver is in a vehicle from a date. **Audited.** |
+| `POST` | `/api/vehicle-assignments/{id}/close` | owner, fleet_manager | End an assignment without naming a replacement. **Audited.** |
 | `GET` | `/api/days` | owner, fleet_manager | Normalised days with per-activity totals. |
 | `GET` | `/api/coverage` | owner, fleet_manager | Which days exist, which are missing, what that invalidates. |
 | `GET` | `/api/summary/daily` | owner, fleet_manager | Days plus Monday-based weekly roll-ups. |
@@ -112,6 +120,38 @@ role resolves to `viewer`, never to a privileged one.
 | `POST` | `/api/calculations` | owner, fleet_manager | Run and store a driving-time calculation. |
 | `GET` | `/api/calculations[/{id}]` | owner, fleet_manager | Stored calculation runs. |
 | `GET` | `/api/audit` | **owner only** | Audit log. |
+
+### Two different questions, two different endpoints
+
+`/api/drivers` returns **cards** this service has seen; `/api/people` returns the
+**people** who hold them. They are separate tables because a driver keeps their
+card when they change employer and can be reissued one after a replacement, so
+"who was driving" has to survive a renewal. `/api/drivers` keeps its name and its
+shape: it is already published and its client reads `driver_cards`, and renaming a
+shipped endpoint to make the newer model tidier would break the older caller for a
+cosmetic gain.
+
+### Assignments: closed, never deleted, and not more than one at a time
+
+A new assignment closes the driver's previous open one rather than deleting it, and
+the closed row is what answers "who was driving that truck on the 3rd". The
+invariants are enforced twice -- by `tacho/registry.py`, and by partial unique
+indexes in `migrations/0004_assignment_invariants.sql`, because a module that only
+*remembers* to close the previous row is one refactor away from two open rows.
+
+There is deliberately **no** unique index per vehicle. Art 8(5) multi-manning puts
+two drivers in one cab, and a constraint that made the correct case impossible to
+record would be worse than none; a vehicle therefore keeps however many open
+assignments it has, and the console shows them all.
+
+Two consequences worth knowing before reading the data:
+
+* A same-day reassignment closes the previous row **on the day it started**
+  (`GREATEST(assigned_from, new_start - 1 day)`), which is the only value that both
+  satisfies the table's `assigned_to >= assigned_from` check and leaves exactly one
+  row open.
+* `vehicle_ref` is the tracker's **uniqueId**, not the vehicle's name. A truck
+  renamed in the tracker console must not detach from its own history.
 
 ### The CSV report carries its provenance
 
@@ -181,7 +221,7 @@ Note also that TREP is one byte, not two, and the mapping is `01` overview,
 
 | Claim | Status |
 |---|---|
-| Container walk, cyclic buffer, bit layout: internally consistent | ✅ **tested** — 327 tests |
+| Container walk, cyclic buffer, bit layout: internally consistent | ✅ **tested** — 353 tests |
 | Malformed, truncated and non-tachograph files are contained | ✅ **tested** |
 | Duplicates detected and recorded | ✅ **tested** against PostgreSQL |
 | **Reads a real driver card** | ❌ **NOT RUN** — no lawfully obtained real `.DDD` exists here |

@@ -22,6 +22,17 @@ backups/
 *.sql.gz
 *.dump
 
+# ...but the tachograph schema migrations are SOURCE, not dumps, and this is the
+# one exception. `*.sql` above silently hid all four of them: tacho/tacho/db.py
+# reads this directory at startup and raises if it holds no .sql files, so a fresh
+# clone had no schema at all and could not start. Caught by auditing what the
+# ignore rules were hiding, not by a test.
+!tacho/migrations/*.sql
+
+# Generated tool output (the archify working set): candidate/review JSON and a
+# rendered HTML artifact, all reproducible. Contains absolute local paths.
+.archify/
+
 # Branding: keep placeholders in Git, keep the real client's assets out of it.
 # See branding/README.md.
 branding/assets/*

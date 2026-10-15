@@ -69,24 +69,49 @@ class Database:
         self.close()
 
     # -- queries ----------------------------------------------------------
+    #
+    # Every statement here rolls the transaction back when it fails, and that is
+    # not tidiness. There is ONE connection per process, and PostgreSQL aborts the
+    # whole transaction on a failed statement: it then refuses every later
+    # statement on that connection with InFailedSqlTransaction until the
+    # transaction is rolled back. Without the rollback below, a single failed
+    # query -- an expected unique-violation, a probe against a table that does not
+    # exist -- would poison every request that followed it until the process was
+    # restarted, including the audit writes that are supposed to record what
+    # happened. Found by a test that deliberately violates a unique index.
     def execute(self, sql: str, params: Sequence[Any] = ()) -> None:
-        with self.connect().cursor() as cursor:
-            cursor.execute(sql, params)
-        self.connect().commit()
+        connection = self.connect()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, params)
+        except Exception:
+            connection.rollback()
+            raise
+        connection.commit()
 
     def fetch_one(
         self, sql: str, params: Sequence[Any] = ()
     ) -> Optional[Tuple[Any, ...]]:
-        with self.connect().cursor() as cursor:
-            cursor.execute(sql, params)
-            return cursor.fetchone()
+        connection = self.connect()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, params)
+                return cursor.fetchone()
+        except Exception:
+            connection.rollback()
+            raise
 
     def fetch_all(
         self, sql: str, params: Sequence[Any] = ()
     ) -> List[Tuple[Any, ...]]:
-        with self.connect().cursor() as cursor:
-            cursor.execute(sql, params)
-            return list(cursor.fetchall())
+        connection = self.connect()
+        try:
+            with connection.cursor() as cursor:
+                cursor.execute(sql, params)
+                return list(cursor.fetchall())
+        except Exception:
+            connection.rollback()
+            raise
 
     # -- migrations -------------------------------------------------------
     def apply_migrations(self, migrations_dir: Optional[str] = None) -> List[str]:
