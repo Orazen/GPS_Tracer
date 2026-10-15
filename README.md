@@ -32,16 +32,28 @@ TRUCK  ──▶  SinoTrack ST-906L  ──▶  4G / SIM  ──▶  TCP 5013 (H
 ```bash
 git clone https://github.com/Orazen/GPS_Tracer.git
 cd GPS_Tracer
-
-cp .env.example .env
-$EDITOR .env          # set POSTGRES_PASSWORD at minimum
-
-docker compose up -d
+./scripts/setup.sh
 ```
 
-Then create the first administrator — see [First run](#first-run), because
-Traccar ships with **no users at all** and the stack will look healthy while
-nobody can log in.
+**That is the whole setup.** The one command generates both secrets, brings the
+stack up, creates the first administrator — Traccar ships with **no users at
+all**, so without this the stack passes every healthcheck and nobody can log in —
+closes registration again behind them, runs the smoke test, and prints the URL to
+open. It is safe to re-run: the second run finds the administrator and changes
+nothing.
+
+It also checks every published port **before** starting anything and names the
+container that holds one, because a second copy of this stack on the same machine
+is the most common way this fails. To run a second copy deliberately:
+
+```bash
+./scripts/setup.sh --env-file .env.shop2 -p gpstracer-shop2
+```
+
+`--check` runs that preflight alone and changes nothing.
+
+The manual equivalent is [First run](#first-run) below, for a server where you
+cannot run a script.
 
 | Where | URL | What it is |
 |---|---|---|
@@ -50,12 +62,19 @@ nobody can log in.
 | Tachograph API | `http://localhost:8084` | loopback only; the dashboard proxies it and holds the service token |
 
 `docker compose up -d` deploys under the compose project name `gpstracer-fleet`,
-and that name prefixes the volumes. Two copies of this project on one machine
-must use different names (`docker compose -p gpstracer-dev up -d`), or they will
-share one database. The name is deliberately not the bare product name: a generic
-one collides with any other stack that calls itself the same thing, and Docker
-gives the loser whatever volume happens to have that name. See
+and that name prefixes every volume and every container. Two copies of this
+project on one machine must use different project names
+(`docker compose -p gpstracer-dev up -d`), or they will share one database. The
+name is deliberately not the bare product name: a generic one collides with any
+other stack that calls itself the same thing, and Docker gives the loser whatever
+volume happens to have that name. See
 [`docs/UNIMPLEMENTED.md`](docs/UNIMPLEMENTED.md) §7.
+
+That separation only works while no service sets a fixed `container_name`, which
+is why none of them does — a fixed name is not prefixed by the project, and the
+second copy then cannot start at all rather than sharing a volume. Two copies
+running side by side on different ports, each with its own volumes, is verified;
+CI fails if a `container_name` is ever added back.
 
 ---
 
@@ -86,6 +105,10 @@ test in [`docs/TESTING.md`](docs/TESTING.md), and
 ---
 
 ## First run
+
+`./scripts/setup.sh` does all of this. It is documented here because the failure
+it works around is the one worth understanding, and because on a server where you
+cannot run a script you have to do it by hand.
 
 Traccar creates **no** user accounts on a fresh install. There is no default
 `admin/admin` in 6.16. With registration closed — the correct production
@@ -125,6 +148,7 @@ Reconfigured Traccar out of the box. No functionality is rebuilt.
 | Stops with duration | **dashboard** — Reports ▸ Stops |
 | Geofences: depot, customer, restricted | **dashboard** — Zones, drawn and edited on the map |
 | Alerts: overspeed, geofence, offline, ignition, SOS | **dashboard** — alert feed |
+| **Connecting a new tracker, without a shell** | **dashboard** — Connect a tracker: the six hops with live state, the identifiers the server has already refused, and the exact SMS to send |
 | Users and roles (admin / manager) | Traccar |
 | Excel export | **dashboard** — Reports ▸ Export Excel, a real spreadsheet |
 | Italian / English | **dashboard** — language switch |
@@ -152,6 +176,8 @@ question from the tracking stack: *whose hours are these, and are they legal?*
 | Activity timeline, daily and weekly summaries | dashboard ▸ Tachograph ▸ Activity |
 | File coverage and missing-data warnings | dashboard ▸ Tachograph ▸ Activity, from `/api/coverage` |
 | Import history, status and raw evidence | dashboard ▸ Tachograph ▸ Imports |
+| Who drives which vehicle, and who drove it last month | dashboard ▸ Tachograph ▸ Drivers, backed by `tacho_vehicle_assignments` |
+| Driver names on the fleet screens | off by default; Tachograph ▸ Drivers records the assignment either way — see [`DASHBOARD-SPEC.md`](../DASHBOARD-SPEC.md) |
 | Findings, breaches and disclosed assumptions | dashboard ▸ Tachograph ▸ Findings |
 | Exportable reports with source and timestamp metadata | CSV export with a provenance header, linked from the Activity screen |
 | EU driving-time findings, versioned and traceable | `tacho/rules/driving_time.py` |
@@ -209,6 +235,7 @@ network, by Traccar and by the two tachograph containers.
 
 | Document | Covers |
 |---|---|
+| [`docs/connect-hardware.html`](docs/connect-hardware.html) | **The whole path on one page** — printable bench sheet: the six hops from tracker to dashboard, and the failure each one produces |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | Stack, layout, what is and is not customised |
 | [`docs/DOKPLOY.md`](docs/DOKPLOY.md) | Deploy, domain, HTTPS, firewall, backups |
 | [`docs/TRACKER-SETUP.md`](docs/TRACKER-SETUP.md) | Wiring, ACC, SIM, per-tracker provisioning |
@@ -219,15 +246,17 @@ network, by Traccar and by the two tachograph containers.
 | [`docs/DRIVING-TIME.md`](docs/DRIVING-TIME.md) | EU rules implemented, assumptions, verification status |
 | [`docs/LIVE-TACHO.md`](docs/LIVE-TACHO.md) | Live/remote tachograph integration: go/no-go, vendors, costs |
 | [`docs/LICENCES.md`](docs/LICENCES.md) | Dependency licence audit, and why an AGPL parser was rejected |
-| [`docs/UNIMPLEMENTED.md`](docs/UNIMPLEMENTED.md) | **Register of everything not done, and why** |
 | [`docs/FLEET-ACCOUNTABILITY.md`](docs/FLEET-ACCOUNTABILITY.md) | Driver identity: what of "who was driving" this system does, and what it deliberately does not |
+| [`docs/UNIMPLEMENTED.md`](docs/UNIMPLEMENTED.md) | **Register of everything not done, and why** |
 
 ---
 
 ## Operations
 
 ```bash
-./scripts/create-admin.sh        # first-run administrator
+./scripts/setup.sh               # the whole setup: secrets, stack, first admin, smoke test
+./scripts/setup.sh --check       # preflight only: ports, docker, nothing changed
+./scripts/create-admin.sh        # first-run administrator, by hand
 ./scripts/backup.sh              # database dump + uploaded tacho files + retention
 ./scripts/backup.sh list         # what is backed up
 ./scripts/backup.sh restore FILE # restore both (stops Traccar, then restarts it)
@@ -235,7 +264,32 @@ network, by Traccar and by the two tachograph containers.
 
 docker compose --profile tools run --rm simulator --reset            # demo fleet, no hardware
 docker compose run --rm tacho-worker python -m tacho.worker --once   # drain the queue
+
+./scripts/connect-tracker.py --check                                 # is the H02 port really reaching Traccar?
+./scripts/connect-tracker.py --imei <imei> --name <plate> \          # register the device, print its SMS
+    --server <public-ip> --apn <carrier-apn>                         # provisioning, then watch it connect
 ```
+
+**Bringing a tracker online is one command.** `connect-tracker.py` checks the
+published port *and* the container side of the mapping, reads back what the server
+will do with an unknown identifier, creates the device record, prints the exact
+SMS sequence with your APN and server substituted, and then waits — reporting
+*registered*, *reached the server* or *positioned*, which are three different
+things and only the last one means it works. When nothing arrives it reads
+Traccar's log and names the fault, including the one with a one-command fix. It
+needs Python and nothing else.
+
+**Before wiring anything into a vehicle**, open
+[`docs/connect-hardware.html`](docs/connect-hardware.html) — the whole path from
+SIM to dashboard on one printable page: six numbered hops, what each one fails
+silently on, and the one command that checks it.
+
+Or open **Connect a tracker** in the dashboard, which is that sheet with live
+state: the same six hops for the identifier in front of you, the settings this
+server is actually running with, every identifier Traccar has already refused
+(with one-click registration), and the SMS block generated from your APN and
+server. Administrators only, because it reports the server's own configuration and
+the raw identifiers of everything that has probed the public H02 port.
 
 Both scripts read `.env` if present but **real environment variables win**, so
 they work unchanged under Dokploy where there is no `.env`. If the stack was
@@ -269,13 +323,17 @@ not been measured.
 | Area | Status |
 |---|---|
 | Traccar + PostgreSQL stack | ✅ running and healthy; `/api/server` → 200 |
+| **One-command setup and first admin (`scripts/setup.sh`)** | ✅ **verified end to end from a clean checkout** — generated both secrets, brought all six services up healthy, created the first administrator, closed registration again, and finished on `RESULT: all checks passed` from the smoke test. Also verified as a *second copy beside a running stack*: its own ports, its own volumes, both stacks healthy at once |
+| **Two copies of this stack on one host** | ✅ **fixed and verified** — no service sets a `container_name`, because a fixed name is not prefixed by the project and the second copy could not start at all. Two copies were run side by side to prove it; CI fails if one is added back |
 | Compose, healthchecks, startup ordering, ports | ✅ verified locally |
-| Tachograph service (import, dedupe, normalise, report) | ✅ **327 tests pass** (exit status checked), including 35 against a real PostgreSQL and a full round trip through the containers |
+| Tachograph service (import, dedupe, normalise, report) | ✅ **353 tests pass** (exit status checked), including 61 against a real PostgreSQL and a full round trip through the containers |
 | EU driving-time engine | ✅ unit-tested against hand-computed scenarios |
 | Driving-time **validation against a reference report** | ❌ **NOT RUN** — no reference available. `validated_against_reference` is `false` everywhere |
 | Parser against a **real driver card** | ❌ **NOT RUN** — only synthetic fixtures exist |
 | Vehicle-unit / GEN2 parsing | ❌ **not implemented** — refused by design |
 | **Physical GPS tracker end-to-end on H02:5013** | ❌ **NOT RUN** — no device has ever connected. The listener and decoder are exercised by `scripts/simulate-fleet.py`, and the published port was re-tested from outside the network, but the radio link, SIM and GNSS are untested |
+| **Connecting a tracker to the server** | ✅ **tool-backed and verified server-side** — `./scripts/connect-tracker.py` checks the port mapping, creates the device, prints the SMS provisioning and reports *registered* / *reached the server* / *positioned*, naming the actual fault from Traccar's log when nothing arrives. The zero-touch path was verified over real H02 on the published port: an unknown identifier was created as category `truck`, and one outside the allow-list was refused and logged. What remains unverified is a physical unit sending those bytes |
+| **Connect-a-tracker screen** | ✅ **built and verified in a browser** — the six hops with live state; the registration state read back from what the Traccar container rendered rather than from the documented default; the identifiers it refused, taken from its log, with one-click registration; and the SMS block asserted against the same commands the Python tests and `docs/TRACKER-SETUP.md` assert. `dashboard/scripts/verify.mjs` drives it (**61 checks, exit 0**). It cannot see the published host port and says so on the screen instead of implying a green light means the outside path works |
 | **Fleet dashboard (Phase 2 UI)** | ✅ **built and verified in a browser** — Fleet, History, Zones, Reports, Tachograph and Settings, in Italian and English. `dashboard/scripts/verify.mjs` drives all of them against a seeded fleet and fails on an empty report, a corrupt export or a console error |
 | Excel export | ✅ **verified as a real spreadsheet** — the download is checked for ZIP magic, not just for its file name |
 | Fleet simulator (H02, no hardware) | ✅ **works** — 1056 fixes over three simulated hours, every packet acknowledged by Traccar's own H02 decoder |
@@ -283,7 +341,7 @@ not been measured.
 | Smoke test covering the tachograph service | ✅ **extended** — health, refusal without the service token, acceptance with it, and role gating on the access log |
 | Live/remote tachograph integration | ❌ **not implemented** — investigated in [`docs/LIVE-TACHO.md`](docs/LIVE-TACHO.md) |
 | Dokploy deployment | 📄 **documented, unverified** |
-| Automated tests in CI | ✅ **configured** — [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the Python suite twice (without a database, then with PostgreSQL), builds the dashboard, and asserts the compose port mappings |
+| Automated tests in CI | ✅ **configured** — [`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs the Python suite twice (without a database, then with PostgreSQL), runs the provisioning tool's own 79 tests, builds the dashboard, asserts the compose port mappings and that the auto-registration settings render into valid XML, and now also fails on a reintroduced `container_name`, on a shell script that does not parse, and unless `setup.sh --check` passes |
 
 The short version: **the tracking infrastructure, the dashboard and the tachograph
 service are built and tested; the hardware and the external validation are not.**

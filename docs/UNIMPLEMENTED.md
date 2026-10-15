@@ -20,7 +20,7 @@ here has been tested.
 
 | Feature | Why it is blocked | What is needed to close it |
 |---|---|---|
-| **End-to-end GPS tracker verification on H02:5013** | No tracker has ever connected. The listener and decoder are exercised by `scripts/simulate-fleet.py`, and the published port now genuinely reaches h02 — it used to land on Traccar's *watch* listener instead (see §7.8), which was found by sending a real H02 packet from the host and reading the acknowledgement back. None of that involves a radio link, a SIM or GNSS. | One SinoTrack ST-906L (or equivalent), a SIM, and `docs/TESTING.md` |
+| **End-to-end GPS tracker verification on H02:5013** | No tracker has ever connected. The listener and decoder are exercised by `scripts/simulate-fleet.py`, and the published port now genuinely reaches h02 — it used to land on Traccar's *watch* listener instead (see §7.8), which was found by sending a real H02 packet from the host and reading the acknowledgement back. None of that involves a radio link, a SIM or GNSS. The **server side of onboarding is now tool-backed and verified** (§5), so when a unit does arrive the remaining unknown is the radio link, not the server. | One SinoTrack ST-906L (or equivalent), a SIM, and `docs/TESTING.md` |
 | **Tracker protocol confirmation** | The device's actual protocol is assumed from documentation, not observed. It may need GT06, or a different port entirely. | The device, and its traffic |
 | **Overspeed, power-disconnect (tamper) and SOS notifications** | Each depends on the specific device emitting the event. Traccar supports them; **the tracker is unverified**, and it is wrong to claim them first. | The device, then deliberately trigger each condition |
 | **Ignition/ACC detection** | A wired input. Cannot be simulated from documentation. | Installation and a wiring check |
@@ -66,17 +66,18 @@ here has been tested.
 
 | Feature | Status | Note |
 |---|---|---|
-| **Fleet dashboard (Phase 2)** | ✅ **BUILT AND VERIFIED** | `dashboard/` serves the app and proxies both upstreams from one origin, so there is one sign-in and the tachograph service token never reaches the browser. Fleet map, route history with stops and arrivals, geofence management, summary/stop/trip reports, a real XLSX export and the Italian/English switch are present. `dashboard/scripts/verify.mjs` drives every screen in a real browser against a seeded fleet and fails on an empty report, a non-spreadsheet download or a console error — which is how two of the defects below were found. **Not built:** the vehicle/tracker/driver registry screens (Traccar's own UI is the break-glass answer) and the mobile confirm page |
+| **Fleet dashboard (Phase 2)** | ✅ **BUILT AND VERIFIED** | `dashboard/` serves the app and proxies both upstreams from one origin, so there is one sign-in and the tachograph service token never reaches the browser. Fleet map, route history with stops and arrivals, geofence management, summary/stop/trip reports, a real XLSX export and the Italian/English switch are present. `dashboard/scripts/verify.mjs` drives every screen in a real browser against a seeded fleet and fails on an empty report, a non-spreadsheet download or a console error — which is how two of the defects below were found. **Not built:** the vehicle/tracker registry screens (Traccar's own UI is the break-glass answer) and the mobile confirm page. The **driver** registry is no longer on this list: it is Tachograph → Drivers |
 | Tachograph dashboard screens | ✅ **BUILT** | Four sections in front of the API: Imports (history, status, raw evidence), Activity (timeline, per-day totals, coverage and missing-data warnings, CSV link), Findings (results with their article, breaches, disclosed assumptions) and Access log (owner-only). The rules version and the "not validated against a reference report" notice are on screen, not just in a response body |
-| Driver-card registry and assignment history UI | ⚠️ **SCHEMA + API ONLY** | `tacho_drivers`, `tacho_card_assignments` and `tacho_vehicle_assignments` exist and are migrated, but there are **no endpoints** for managing assignments and no UI |
+| Driver-card registry and assignment history | ✅ **BUILT** | `tacho_drivers`, `tacho_card_assignments` and `tacho_vehicle_assignments` now have endpoints (`/api/people`, `/api/card-assignments`, `/api/vehicle-assignments`) and a screen: **Tachograph → Drivers**. A driver is registered, a card is linked from the registry, a vehicle is assigned, and the assignment is mirrored into the tracker's `driverDriverId` attribute so the roster, the panel and the alerts agree. Assignment history is closed, never deleted, and every read and write is audited with the forwarded actor and role; a `viewer` is refused. **Not done:** automatic retention/deletion (row 6 below), and there is no bulk import of drivers from payroll — they are registered one at a time |
+| One open assignment per driver, one per card | ✅ **ENFORCED IN THE DATABASE** | Partial unique indexes in `tacho/migrations/0004_assignment_invariants.sql`. Deliberately **not** enforced per vehicle: Art 8(5) multi-manning puts two drivers in one cab, and a unique index there would make the correct case impossible to record. The tracker's single attribute cannot hold two names, so the mirror shows the most recent of them and the registry is what the history is read from |
+| Mobile confirm page | ❌ **NOT IMPLEMENTED** | Deferred in the fleet spec |
+| PDF export | ❌ **NOT IMPLEMENTED** | CSV only |
+| Excel/XLSX export | ✅ **BUILT** | The dashboard requests Traccar's raw spreadsheet and hands the response straight to the browser, refusing to save a body that is not a spreadsheet — Traccar answers a careless `Accept` header with JSON, and a JSON file named `.xlsx` opens as a corrupt file. The acceptance test checks the bytes (ZIP magic and size), not the filename. The tachograph service exports CSV |
 | Driver identity observed, not assigned | ❌ **NOT IMPLEMENTED** | The roster *asserts* who drives which vehicle and the system believes it. No iButton, RFID reader or Driver-ID handshake exists in this repository, and the tracker assumed here has no such input wired, so nothing observes who actually drove a trip. Everything downstream — investigations, disputes, unauthorised-use detection — inherits its accuracy from roster discipline. See `docs/FLEET-ACCOUNTABILITY.md` §2A |
 | Vehicle moved with no driver assigned | ❌ **NOT IMPLEMENTED** | The alert engine raises an out-of-hours alert but has no "moved while unassigned" rule, so a truck with a stale or missing assignment looks accounted for. All the pieces exist (the attribute, the engine, the working-hours rule); the rule is not written. `docs/FLEET-ACCOUNTABILITY.md` §2B |
 | Harsh acceleration / braking / cornering detection | ❌ **NOT IMPLEMENTED, AND REFUSED BY DESIGN** | Only speeding is detected, and only once a limit is set (`speedLimit` defaults to `0` = off). Behaviour scoring is not a missing feature: in Italy it is what turns a tracking system into worker monitoring under Art. 4 L.300/1970. `docs/FLEET-ACCOUNTABILITY.md` §3 |
 | Driver-facing collection notice (GDPR Art. 13) | ❌ **NOT IMPLEMENTED** | Required by `LEGAL-ITALY.md` as a first-launch screen. There is no driver-facing surface at all — the mobile confirm page is deferred — so there is nowhere to put it |
 | Access audit for fleet data | ❌ **NOT IMPLEMENTED** | Reads and writes of *tachograph* driver data are audited with actor, role and source IP. Opening a truck's trail history or route reports is not logged anywhere, so "who looked at this route" has no answer. `docs/FLEET-ACCOUNTABILITY.md` §2C |
-| Mobile confirm page | ❌ **NOT IMPLEMENTED** | Deferred in the fleet spec |
-| PDF export | ❌ **NOT IMPLEMENTED** | CSV only |
-| Excel/XLSX export | ✅ **BUILT** | The dashboard requests Traccar's raw spreadsheet and hands the response straight to the browser, refusing to save a body that is not a spreadsheet — Traccar answers a careless `Accept` header with JSON, and a JSON file named `.xlsx` opens as a corrupt file. The acceptance test checks the bytes (ZIP magic and size), not the filename. The tachograph service exports CSV |
 
 ---
 
@@ -86,7 +87,8 @@ here has been tested.
 |---|---|---|
 | Dokploy deployment | 📄 **DOCUMENTED, UNVERIFIED** | `docs/DOKPLOY.md` describes it. The stack has never been deployed through Dokploy from this repository; it has been run locally under Docker Compose |
 | HTTPS | ❌ **NOT CONFIGURED HERE** | Traccar's web port binds to loopback explicitly so a reverse proxy must terminate TLS. No proxy, certificate or TLS configuration is in this repository |
-| Automated tests in CI | ✅ **CONFIGURED** | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). Three jobs: the Python suite run twice (logic only, then against a real PostgreSQL service), the dashboard build, and compose validation that also asserts the h02 port mapping and that PostgreSQL is not published. The 327 tests pass locally with their exit status checked; CI is what stops them rotting |
+| Automated tests in CI | ✅ **CONFIGURED** | [`.github/workflows/ci.yml`](../.github/workflows/ci.yml). Four jobs: the Python suite run twice (logic only, then against a real PostgreSQL service), the provisioning tool's own suite, the dashboard build, and compose validation that also asserts the h02 port mapping, that PostgreSQL is not published, and that the auto-registration settings render into valid XML. Locally: 292 passed + 61 skipped without a database, plus 80 provisioning-tool tests — 372 passing with their exit status checked. CI is what stops them rotting |
+| **Zero-touch tracker onboarding** (`database.registerUnknown`) | ✅ **VERIFIED — SERVER SIDE, NOT HARDWARE** | Proved over real H02 on the published port: a device with an unknown identifier was created by Traccar on its first packet, as category `truck`, with the tracker-style acknowledgement returned to the sender. A second identifier outside `database.registerUnknown.regex` was refused and logged, which is the same evidence the default path produces. **What this does not prove:** that a physical unit sends those bytes (§1), or that the regex chosen here matches a real vendor's IMEI batch |
 | Smoke test covering the tachograph service | ✅ **EXTENDED** | `scripts/smoke-test.sh` now also checks `tacho-api` health, that it refuses a read with no service token, that it accepts the token as `owner`, and that a `viewer` cannot read the access log. **Still not checked:** migration state and queue depth |
 | Backup covering the tachograph volume | ✅ **AUTOMATED** | `scripts/backup.sh` writes the PostgreSQL dump and an archive of the `tacho-data` volume under one timestamp, prunes them together, and a restore puts both back. The archive was restored into a scratch volume and matched the live one file for file |
 | Database migrations | ✅ **DONE** | `tacho/migrations/*.sql`, applied by a checksum-verified runner that refuses to start if an applied migration has changed |
@@ -127,7 +129,12 @@ Recorded so they are not rediscovered expensively.
    such file or directory`, which reads like data corruption rather than a naming
    collision. Changing the name again later orphans the existing volumes (a fresh
    empty database, the real one left behind), so rename deliberately or not at all.
-   A second copy of the stack on one host must use `docker compose -p <name>`.
+   A second copy of the stack on one host must use `docker compose -p <name>` — and
+   that only works because **no service sets a `container_name`**. A fixed
+   container name is not prefixed by the project, so a second copy collides on it
+   and cannot start at all, while the docs promised that `-p` was enough. Verified
+   by running two copies side by side on different ports and volumes; CI now fails
+   if a `container_name` is reintroduced.
 3. **Traccar's web port is bound to loopback on purpose.** Putting a reverse proxy in
    front is required, not optional, before this is reachable from the internet.
 4. **The tachograph database and the `tacho-data` volume must be restored together.**
@@ -160,3 +167,60 @@ Recorded so they are not rediscovered expensively.
    healthcheck while decoding nothing — found by sending a real H02 frame from the
    host and reading the decoder's own log line. `H02_PORT` was in the environment
    the whole time, which is what made it convincing. CI now asserts the mapping.
+9. **`database.registerUnknown.regex` must match the WHOLE identifier, or it silently
+   accepts nothing.** Traccar tests the identifier with Java's `String.matches`, which
+   anchors both ends: `^42102` therefore rejects every unit, including the ones it was
+   written for. The symptom is identical to auto-registration being off — a
+   `WARN: Unknown device` line and no position — so it reads as broken hardware. Use
+   `42102.*`. Measured on this stack, and verified against the image rather than a
+   wiki: the connection handler's constant pool calls
+   `java/lang/String.matches(Ljava/lang/String;)Z`. The container now prints this
+   caveat at startup, and `scripts/connect-tracker.py --check` reports the pattern in
+   force instead of assuming.
+10. **A second copy of this stack on one host will fight over the H02 port.** Two
+    Traccar stacks were running here (`gpstracer-dev` on host 5093, another checkout's
+    on 5013). A tool that discovered "the Traccar container" by taking the first name
+    `docker ps` printed reported a port-mapping fault against the *healthy* stack,
+    which sends a technician to edit a correct compose file.
+    `scripts/connect-tracker.py` now chooses the container that publishes the
+    configured `H02_PORT`, names the ambiguity, and accepts `--container` to override.
+11. **A generated secret has to be written to the env file *and* into the running
+    shell.** That is not a style point: these scripts load the env file with "a real
+    environment variable wins", so a variable already exported from the file beats
+    the file itself inside Compose. Generating a value, writing it to `.env` and
+    then starting the stack without re-exporting it starts the stack from the old
+    placeholder while the file looks correct. Hit while building
+    `scripts/setup.sh`; Traccar refusing to boot on `POSTGRES_PASSWORD=CHANGE_ME`
+    is the only reason it was not a silent wrong-password database connection.
+    `scripts/setup.sh` now exports every value it writes.
+12. **`attributes.deviceType` does not set a device's category; only the top-level
+    `category` field does.** Measured on this stack (14 Oct 2026) by creating two
+    devices through the API and reading them straight back:
+    `{"attributes":{"deviceType":"truck"}}` came back with `category: null`, and
+    `{"category":"truck","attributes":{...}}` with `category: "truck"`.
+    `scripts/connect-tracker.py` sent only the attributes form, so its `--category`
+    argument was silently a no-op and every device it registered had a **null
+    category** — which is precisely the condition that trail warns about, where
+    Traccar's derived speed and distance are quietly wrong. The payload now sends
+    both fields, `ensure_device` repairs the category of a device it finds on a
+    re-run (verified live: a `null`-category device came back as `truck`), and the
+    test asserts both fields rather than only the one that does nothing.
+13. **The Connect-a-tracker screen cannot see the published host port.** It reports
+    what the Traccar container rendered, the identifiers Traccar refused, and
+    whether the h02 listener answers on 5013 *inside* the Docker network — all
+    read from the log volume it has mounted read-only. The host side of the H02
+    mapping is invisible from inside any container, so hop 3 says exactly that on
+    screen rather than turning green and implying the outside path works. The only
+    check that covers both sides is `scripts/connect-tracker.py --check`, and an
+    outside-in test is `traccar.org/port-check`. Hops 1 and 2 (the SMS and the data
+    session) are equally invisible: they are reported as "not visible from here"
+    until a position proves they worked, which is stated rather than approximated
+    with a spinner. And the screen is administrator-only — it reports the server's
+    configuration and the raw identifiers of everything that has probed the public
+    H02 port.
+14. **`scripts/setup.sh` covers the stack, not the deployment.** It deliberately
+    does **not**: put TLS or a reverse proxy in front of the dashboard
+    (`docs/DOKPLOY.md`), schedule `scripts/backup.sh`, set `BACKUP_DIR`, verify that
+    a backup restores, or touch anything about the physical tracker. It ends on the
+    smoke test, which is the point where the stack is usable and the deployment is
+    still not finished.

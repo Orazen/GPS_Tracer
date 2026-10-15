@@ -19,10 +19,12 @@ docker compose --profile tools run --rm simulator --reset
 
 ./scripts/smoke-test.sh                    # is this deployment usable?
 
-cd tacho      && python -m pytest tests/ -q    # 291 tests, no database needed
-cd tacho      && TACHO_TEST_DATABASE_URL=... python -m pytest tests/ -q   # 327 with one
+cd tacho      && python -m pytest tests/ -q    # 292 pass, no database needed
+cd tacho      && TACHO_TEST_DATABASE_URL=... python -m pytest tests/ -q   # 353 with one
 
 cd dashboard  && node scripts/verify.mjs       # every screen, in a real browser
+cd dashboard  && npm run audit:ui              # design rules that need the DOM; exit 1 on a finding
+cd dashboard  && npm run audit:ui:controls     # proves each of those rules can fail (~15 min)
 ```
 
 `scripts/simulate-fleet.py` speaks H02 to port 5013, so Traccar's **own** decoder
@@ -33,7 +35,7 @@ is why the rest of this document still has to be worked through with a tracker i
 hand.
 
 `dashboard/scripts/verify.mjs` needs a running stack with seeded data and Chromium
-(`npx playwright install chromium`). It signs in, walks all six screens, clicks
+(`npx playwright install chromium`). It signs in, walks all eight screens, clicks
 through every report, checks that the Excel download really is a spreadsheet, and
 fails on an empty report, a console error or a failed request. Screenshots land in
 `dashboard/shots/`.
