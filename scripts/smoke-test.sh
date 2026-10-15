@@ -62,7 +62,7 @@ if curl -s -m 5 "http://127.0.0.1:${TRACCAR_WEB_PORT:-8082}/" >/dev/null 2>&1; t
   if [ "${SKIP_LOCAL:-}" = "1" ]; then
     warn "skipping local-only checks (SKIP_LOCAL=1)"
   else
-    pass "8082 reachable on loopback (expected: proxied by Dokploy, not public)"
+    pass "${TRACCAR_WEB_PORT:-8082} reachable on loopback (expected: proxied by Dokploy, not public)"
   fi
 fi
 

@@ -27,7 +27,11 @@
 # ---------------------------------------------------------------------------
 set -eu
 
-CONF=/opt/traccar/conf/traccar.xml
+# Where the rendered config goes. Overridable so CI can render the file and read
+# the XML back without a container: the two formatting traps in the header, and
+# the registerUnknown companion keys, are only observable in the output.
+# The default is where the image expects it, so a deployment never sets this.
+CONF="${TRACCAR_CONF_PATH:-/opt/traccar/conf/traccar.xml}"
 
 : "${POSTGRES_DB:?POSTGRES_DB is required}"
 : "${POSTGRES_USER:?POSTGRES_USER is required}"
@@ -36,6 +40,11 @@ CONF=/opt/traccar/conf/traccar.xml
 : "${LOG_LEVEL:=info}"
 : "${POSITION_RETENTION_DAYS:=180}"
 : "${ALLOW_REGISTRATION:=false}"
+# Auto-create a device the first time an unknown identifier talks to the server,
+# and what that device should look like. Rendered further down, below esc().
+: "${REGISTER_UNKNOWN:=false}"
+: "${REGISTER_UNKNOWN_CATEGORY:=truck}"
+: "${REGISTER_UNKNOWN_REGEX:=}"
 # off | nominatim | google | ... See GEOCODER_ENTRY below for why the default is
 # off rather than the provider Traccar picks on its own.
 : "${GEOCODER:=off}"
@@ -57,6 +66,66 @@ fi
 esc() {
   printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
 }
+
+# database.registerUnknown. Traccar's default is off, and off is the right
+# default here: the H02 port is on the public internet, so with this on, anything
+# that opens a connection and sends a plausible packet becomes a device record
+# and the roster fills with entries named after whatever the packet contained.
+#
+# Turning it on is the zero-touch onboarding path -- a tracker then appears by
+# itself the moment it first connects, with no server-side step -- which is the
+# right trade on a bench or a pilot and the wrong one for a production fleet.
+# docs/TRACKER-SETUP.md §4 describes both paths and when each applies.
+#
+# On its own the switch is also incomplete, which was measured rather than
+# assumed: a device auto-created with only `database.registerUnknown=true` comes
+# out named after the raw identifier with an EMPTY category, and Traccar derives
+# speed and distance from the category. So the switch is rendered together with
+# the two keys that make the result correct and bounded:
+#
+#   defaultCategory  what kind of vehicle the new device is. `truck` here.
+#   regex            an allow-list of identifiers. Empty means "any identifier",
+#                    which is exactly what makes the switch a liability on a
+#                    public port; `^42102` accepts this fleet's units and still
+#                    rejects -- and still logs -- a stray packet from anything
+#                    else. RECONF-verified IMEIs share a prefix less often than
+#                    one would like, so this is a knob, not a default.
+#
+# This block sits below esc() because both values are interpolated into XML
+# attributes, and every other value in this file is escaped the same way.
+#
+# Multi-line is safe here specifically because this is XML markup being spliced
+# into the document, not a properties value -- see trap 2 in the header.
+if [ "$REGISTER_UNKNOWN" = "true" ]; then
+  REGISTER_UNKNOWN_ENTRY="    <entry key='database.registerUnknown'>true</entry>
+    <entry key='database.registerUnknown.defaultCategory'>$(esc "$REGISTER_UNKNOWN_CATEGORY")</entry>"
+  if [ -n "$REGISTER_UNKNOWN_REGEX" ]; then
+    REGISTER_UNKNOWN_ENTRY="$REGISTER_UNKNOWN_ENTRY
+    <entry key='database.registerUnknown.regex'>$(esc "$REGISTER_UNKNOWN_REGEX")</entry>"
+  fi
+  echo "WARNING: database.registerUnknown is ON. An unknown identifier that reaches"
+  echo "         the H02 port will be created as a device automatically, as category"
+  echo "         '$REGISTER_UNKNOWN_CATEGORY'${REGISTER_UNKNOWN_REGEX:+ and only if it matches /$REGISTER_UNKNOWN_REGEX/}."
+  echo "         Set TRACCAR_REGISTER_UNKNOWN=false and redeploy for a production fleet."
+  if [ -n "$REGISTER_UNKNOWN_REGEX" ]; then
+    # Measured against 6.16: the identifier is tested with String.matches(), which
+    # anchors BOTH ends. A prefix pattern like `^42102` therefore accepts nothing
+    # at all, and it fails silently -- the tracker never appears and the log says
+    # "Unknown device", which reads as a broken tracker rather than a typed regex.
+    # Naming the semantics here is cheap; discovering it from that symptom is not.
+    echo "         The pattern must match the WHOLE identifier (Traccar uses"
+    echo "         String.matches), so '^42102' accepts nothing: write '42102.*'."
+  fi
+else
+  REGISTER_UNKNOWN_ENTRY="    <entry key='database.registerUnknown'>false</entry>"
+  if [ -n "$REGISTER_UNKNOWN_REGEX" ]; then
+    # A silently ignored variable is a trap: the operator has every reason to
+    # believe the allow-list is protecting the port, and it is not being read.
+    echo "WARNING: TRACCAR_REGISTER_UNKNOWN_REGEX is set but TRACCAR_REGISTER_UNKNOWN is"
+    echo "         not 'true'. The allow-list has no effect while auto-registration is off"
+    echo "         (an unknown device is rejected before the regex is consulted)."
+  fi
+fi
 
 # The JDBC URL needs its ampersands escaped too. Built separately because esc()
 # would also escape the one inside the XML we are about to open.
@@ -126,6 +195,10 @@ cat > "$CONF" <<XML
     <!-- Closed registration by default. Bootstrap-only; see entrypoint header. -->
     <entry key='registrations'>${REGISTRATIONS_ENTRY}</entry>
 
+    <!-- Auto-create a device on an unknown identifier's first packet. Off by
+         default; see the REGISTER_UNKNOWN block above. -->
+${REGISTER_UNKNOWN_ENTRY}
+
     <!-- Forwarded-position age limit, seconds. Caps how far ahead of the device
          a position may be timestamped before it is rejected. -->
     <entry key='web.maxForwardAge'>300000</entry>
@@ -154,6 +227,57 @@ if grep -q 'CHANGE_ME' "$CONF"; then
 fi
 
 echo "Rendered $CONF (database: postgresql://db:5432/$POSTGRES_DB)"
+
+# ---------------------------------------------------------------------------
+# Publish the onboarding settings that were ACTUALLY rendered.
+#
+# The dashboard's "Connect a tracker" screen has to state what this server will
+# do with an unknown identifier: whether it creates one, as what category, and
+# against which allow-list. There are three ways to get that, and only one of
+# them is right.
+#
+#   * Read conf/traccar.xml from the dashboard. No. That file also holds the
+#     database password, and mounting it into the process that faces the browser
+#     would hand a credential to the least trusted component here in order to
+#     display a boolean.
+#   * Read it from the environment. No. The dashboard container does not have
+#     Traccar's environment, and duplicating those variables in two services is
+#     exactly how the two drift apart with no error anywhere.
+#   * Have the container that renders the file publish the values it used. That
+#     is this, and it cannot disagree with the XML next to it, because both are
+#     written from the same variables in the same process.
+#
+# It lands in the log directory because the dashboard already reads Traccar's log
+# from there (it is where the `Unknown device` lines live) and so needs no extra
+# mount. The file is rewritten on every start, so it cannot go stale, and it
+# holds nothing secret: a boolean, a category name, and a pattern the operator
+# typed into .env themselves.
+#
+# TRACCAR_STATUS_DIR exists so this can be asserted without a container, which is
+# what CI does with it.
+# ---------------------------------------------------------------------------
+json_esc() {
+  printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'
+}
+
+STATUS_FILE="${TRACCAR_STATUS_DIR:-/opt/traccar/logs}/onboarding.json"
+mkdir -p "${STATUS_FILE%/*}" 2>/dev/null || true
+if cat > "$STATUS_FILE" <<STATUS
+{
+  "writtenAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "allowRegistration": $([ "$ALLOW_REGISTRATION" = "true" ] && echo true || echo false),
+  "registerUnknown": $([ "$REGISTER_UNKNOWN" = "true" ] && echo true || echo false),
+  "defaultCategory": "$(json_esc "$REGISTER_UNKNOWN_CATEGORY")",
+  "regex": "$(json_esc "$REGISTER_UNKNOWN_REGEX")",
+  "h02ContainerPort": 5013
+}
+STATUS
+then
+  echo "Published the onboarding settings to $STATUS_FILE"
+else
+  echo "WARNING: could not write $STATUS_FILE, so the dashboard will report the" >&2
+  echo "         registration state as unreadable rather than guessing at it." >&2
+fi
 
 # Hand over to the image's own command. Exec so Traccar becomes PID 1 and gets
 # SIGTERM directly — Docker then stops it cleanly instead of killing it.

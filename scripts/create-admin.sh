@@ -5,7 +5,7 @@
 # WHY THIS IS NEEDED
 # ------------------
 # Traccar creates NO users on a fresh install. There is no default admin/admin
-# account in 6.16 — verified against a clean PostgreSQL boot on 1 Oct 2026:
+# account in 6.16 - verified against a clean PostgreSQL boot on 1 Oct 2026:
 #
 #   postgres=# SELECT count(*) FROM tc_users;
 #            count
@@ -14,8 +14,8 @@
 # With registration disabled (the correct production setting) there is then no
 # way to create the first user: POST /api/users is refused for anonymous callers
 # with a NullPointerException from PermissionsService, which is Traccar's way of
-# saying "you are not allowed". The stack looks perfectly healthy — the
-# healthcheck passes, /api/server answers — and is completely unusable.
+# saying "you are not allowed". The stack looks perfectly healthy - the
+# healthcheck passes, /api/server answers - and is completely unusable.
 #
 # So the first run is a deliberate, documented three-step bootstrap:
 #
@@ -23,10 +23,10 @@
 #   2. ./scripts/create-admin.sh                        (this script)
 #   3. TRACCAR_ALLOW_REGISTRATION=false  in .env, then:  docker compose up -d
 #
-# This script only calls Traccar's own API. It does not write to the database and
-# does not try to reproduce Traccar's password hashing (PBKDF2WithHmacSHA256,
-# 200k iterations — see docs/SECURITY.md). Hand-rolling that in shell is exactly
-# how you ship a deployment where nobody can log in.
+# This script only calls Traccar's own API. It never writes to the database and
+# never tries to reproduce Traccar's password hashing (PBKDF2WithHmacSHA256, 200k
+# iterations - see docs/SECURITY.md). Hand-rolling that in shell is exactly how you
+# ship a deployment where nobody can log in.
 #
 # Safe to re-run: it refuses if the user already exists.
 # ---------------------------------------------------------------------------
@@ -42,8 +42,7 @@ load_env() {
   local line key value
   while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in ''|'#'*) continue ;; *=*) ;; *) continue ;; esac
-    key="${line%%=*}"
-    value="${line#*=}"
+    key="${line%%=*}"; value="${line#*=}"
     case "$value" in \"*\") value="${value#\"}"; value="${value%\"}" ;; \'*\') value="${value#\'}"; value="${value%\'}" ;; esac
     [ -n "${!key+x}" ] || export "$key=$value"
   done < .env
@@ -54,8 +53,8 @@ WEB_PORT="${TRACCAR_WEB_PORT:-8082}"
 BASE="http://127.0.0.1:${WEB_PORT}"
 
 : "${ADMIN_NAME:=Fleet Administrator}"
-: "${ADMIN_EMAIL:?ADMIN_EMAIL is not set in .env}"
-: "${ADMIN_PASSWORD:?ADMIN_PASSWORD is not set in .env}"
+: "${ADMIN_EMAIL:?ADMIN_EMAIL is not set. Set it in .env or pass it in the environment.}"
+: "${ADMIN_PASSWORD:?ADMIN_PASSWORD is not set. Set it in .env or pass it in the environment.}"
 
 case "$ADMIN_EMAIL" in
   *CHANGE_ME*) echo "ERROR: ADMIN_EMAIL is still CHANGE_ME. Edit .env first." >&2; exit 1 ;;
@@ -63,8 +62,9 @@ esac
 case "$ADMIN_PASSWORD" in
   *CHANGE_ME*) echo "ERROR: ADMIN_PASSWORD is still CHANGE_ME. Edit .env first." >&2; exit 1 ;;
 esac
-# JSON escaping for the values we inject. Passwords with a quote or backslash
-# would otherwise produce invalid JSON and a baffling 400.
+
+# JSON escaping for values we inject. A password with a quote or backslash would
+# otherwise produce invalid JSON and a baffling 400.
 json_escape() { printf '%s' "$1" | sed -e 's/\\/\\\\/g' -e 's/"/\\"/g'; }
 
 echo "Waiting for Traccar at ${BASE} ..."
@@ -77,12 +77,11 @@ for i in $(seq 1 60); do
   sleep 5
 done
 
-# Do NOT try to pre-check whether registration is open.
+# Do NOT pre-check whether registration is open.
 # GET /api/server reports a field called "registration", but it is Traccar's
 # server/cluster registration, NOT user self-registration. Trusting it made this
-# script refuse to run while registration was in fact enabled — verified 1 Oct
-# 2026. Attempting the POST and interpreting the response is both simpler and
-# correct.
+# script refuse to run while registration was in fact enabled - verified 1 Oct
+# 2026. Attempting the POST and interpreting the response is simpler and correct.
 
 # Already there? Then this bootstrap is done.
 if curl -fsS -m 5 -X POST "${BASE}/api/session" \
@@ -123,12 +122,12 @@ case "$RESP" in
     echo "    --data-urlencode 'email=${ADMIN_EMAIL}' \\"
     echo "    --data-urlencode 'password=***'"
     echo
-    echo "NOW: set TRACCAR_ALLOW_REGISTRATION=false in .env and redeploy."
+    echo "NOW: set TRACCAR_ALLOW_REGISTRATION=false and redeploy."
     ;;
   *)
     # Traccar answers 400 with a NullPointerException from PermissionsService
-    # when anonymous callers are not allowed to create users. That is its way of
-    # saying registration is closed.
+    # when anonymous callers may not create users - its way of saying
+    # registration is closed.
     if grep -q "PermissionsService" /tmp/gps-tracker-admin.json 2>/dev/null; then
       cat >&2 <<EOF
 ERROR: Traccar refused to create the user, which means registration is closed.

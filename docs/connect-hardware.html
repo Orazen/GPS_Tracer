@@ -1,0 +1,644 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How a tracker reaches this server — GPS_Tracer bench sheet</title>
+<!--
+  One page that answers "why is nothing on the map?" before it is asked.
+
+  Design: applies the design-taste core rules (indexed sections on a hairline
+  grid, mono labels against a tight sans display, one accent, rows instead of
+  cards, no emoji, no gradients, structure over decoration) using THIS product's
+  tokens rather than a genre pack from the skill, because the sheet hangs next to
+  the dashboard and has to speak the same language: paper-white panels on
+  #f1f1f1, ink #19191c, one blue accent at #0058ec.
+
+  Diagram convention, chosen deliberately (see docs/TRACKER-SETUP.md §8):
+    solid line   data on the running system
+    dashed line  setup, done once per unit
+    zone band    who operates that segment
+    numbered key the diagram and the table below share numbering, so a symptom
+                 in the table points straight back at the hop on the sheet
+
+  No JavaScript, no webfont, no external asset: it must open from a USB stick on
+  a laptop with no network, and print legibly in black and white.
+-->
+<style>
+  :root {
+    /* the dashboard's surface and ink, so the two read as one product */
+    --bg: #f1f1f1;
+    --panel: #ffffff;
+    --fg: #19191c;
+    --fg2: #5c5c5c;
+    --muted: #8a8a8a;
+    --line: rgba(25, 25, 28, .12);
+    --line-strong: rgba(25, 25, 28, .28);
+
+    /* interaction/data accent. used for one thing: the data path. */
+    --brand: #0058ec;
+    --brand-tint: rgba(0, 88, 236, .06);
+
+    /* status: a state, never decoration */
+    --alert: #c22634;
+    --moving: #147a3a;
+
+    /* Manrope first, to match the dashboard's vendored face; then the platform
+       UI face. This sheet carries no font file on purpose -- see the note above
+       -- so on a machine without Manrope it renders in the platform face. */
+    --sans: Manrope, system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, monospace;
+
+    --t-xs: 11px;
+    --t-sm: 12px;
+    --t-base: 14px;
+    --t-lg: 16px;
+    --t-xl: 20px;
+    --display: clamp(2rem, 4.6vw, 3.4rem);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 400 var(--t-base)/1.5 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .sheet {
+    max-width: 1120px;
+    margin: 0 auto;
+    background: var(--panel);
+    border-left: 1px solid var(--line);
+    border-right: 1px solid var(--line);
+    padding: 0 0 8px;
+  }
+
+  /* ---- labels: mono, caps, letterspaced. the sheet's second voice ------- */
+  .label {
+    font-family: var(--mono);
+    font-size: var(--t-xs);
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* ---- masthead: asymmetric, type carries the voice, no hero image ------ */
+  header {
+    display: grid;
+    grid-template-columns: 7fr 5fr;
+    gap: 0 40px;
+    padding: 40px 48px 28px;
+    border-bottom: 1px solid var(--line-strong);
+  }
+  header h1 {
+    margin: 10px 0 0;
+    font-size: var(--display);
+    font-weight: 700;
+    letter-spacing: -.035em;
+    line-height: 1.02;
+    max-width: 22em;
+  }
+  header .standfirst {
+    align-self: end;
+    color: var(--fg2);
+    font-size: var(--t-lg);
+    max-width: 40em;
+  }
+  header .standfirst strong { color: var(--fg); }
+  .masthead-meta {
+    grid-column: 1 / -1;
+    display: flex;
+    gap: 28px;
+    flex-wrap: wrap;
+    margin-top: 26px;
+    padding-top: 14px;
+    border-top: 1px solid var(--line);
+  }
+  .masthead-meta div { min-width: 132px; }
+  .masthead-meta b {
+    display: block;
+    font-family: var(--mono);
+    font-size: var(--t-base);
+    font-weight: 500;
+    margin-top: 3px;
+    letter-spacing: -.01em;
+  }
+
+  /* ---- sections: numbered, hairline-ruled, part of one grid ------------- */
+  section { padding: 34px 48px 6px; border-top: 1px solid var(--line); }
+  section:first-of-type { border-top: 0; }
+  .sec-head { display: flex; align-items: baseline; gap: 16px; margin-bottom: 4px; }
+  .sec-num {
+    font-family: var(--mono);
+    font-size: var(--t-sm);
+    color: var(--fg);
+    padding-right: 16px;
+    border-right: 1px solid var(--line-strong);
+    letter-spacing: .1em;
+  }
+  .sec-head h2 {
+    margin: 0;
+    font-size: var(--t-xl);
+    font-weight: 700;
+    letter-spacing: -.02em;
+  }
+  .sec-head .sec-note {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: var(--t-xs);
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .1em;
+  }
+  .lede {
+    color: var(--fg2);
+    max-width: 62em;
+    margin: 10px 0 22px;
+  }
+  .lede code, p code, td code, li code {
+    font-family: var(--mono);
+    font-size: .92em;
+    background: var(--bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  /* ---- the diagram ----------------------------------------------------- */
+  figure { margin: 0; }
+  figure .viz { width: 100%; height: auto; display: block; }
+  figcaption {
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: var(--t-xs);
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .1em;
+  }
+
+  .zone   { fill: none; stroke: var(--line); }
+  .zone-l { font: 500 11px var(--mono); fill: var(--muted); letter-spacing: .12em; }
+  .node   { fill: var(--panel); stroke: var(--line-strong); }
+  .node-b { fill: var(--brand-tint); stroke: var(--brand); }
+  .n-title{ font: 600 13.5px var(--sans); fill: var(--fg); }
+  .n-sub  { font: 400 11px var(--mono); fill: var(--fg2); }
+  .n-key  { font: 500 10.5px var(--mono); fill: var(--brand); }
+  .flow   { fill: none; stroke: var(--line-strong); stroke-width: 1.6; }
+  .flow-run { fill: none; stroke: var(--brand); stroke-width: 2; }
+  .flow-setup { fill: none; stroke: var(--line-strong); stroke-width: 1.6; stroke-dasharray: 5 4; }
+  .head-ink { fill: var(--line-strong); }
+  .head-run { fill: var(--brand); }
+  .mark   { fill: var(--panel); stroke: var(--line-strong); }
+  .mark-b { fill: var(--brand); stroke: var(--brand); }
+  .mark-t { font: 500 11px var(--mono); fill: var(--fg); }
+  .mark-tb{ font: 500 11px var(--mono); fill: #fff; }
+  .tick   { font: 500 9.5px var(--mono); fill: var(--muted); letter-spacing: .1em; }
+  .tick-b { font: 500 9.5px var(--mono); fill: var(--brand); letter-spacing: .1em; }
+
+  /* ---- the hop table: rows on hairlines, not six cards ----------------- */
+  table { width: 100%; border-collapse: collapse; }
+  th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: 12px 14px 12px 0;
+    border-bottom: 1px solid var(--line);
+  }
+  thead th {
+    font-family: var(--mono);
+    font-size: var(--t-xs);
+    font-weight: 500;
+    letter-spacing: .12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line-strong);
+  }
+  tbody th { font-weight: 600; width: 17%; }
+  tbody th .hop {
+    display: block;
+    font-family: var(--mono);
+    font-size: var(--t-xs);
+    color: var(--muted);
+    letter-spacing: .1em;
+    font-weight: 500;
+    margin-bottom: 3px;
+  }
+  td.sym { color: var(--alert); }
+  td.chk { font-family: var(--mono); font-size: var(--t-sm); color: var(--fg); width: 23%; }
+  td.chk code { background: none; padding: 0; font-size: var(--t-sm); }
+
+  /* ---- the three states + the command ---------------------------------- */
+  .states {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    border-top: 1px solid var(--line-strong);
+    border-bottom: 1px solid var(--line-strong);
+    margin: 4px 0 20px;
+  }
+  .state { padding: 18px 18px 20px; border-right: 1px solid var(--line); }
+  .state:last-child { border-right: 0; }
+  .state h3 {
+    margin: 8px 0 6px;
+    font-size: var(--t-lg);
+    letter-spacing: -.01em;
+  }
+  .state p { margin: 0; color: var(--fg2); font-size: var(--t-base); }
+  .dot {
+    display: inline-block;
+    width: 9px; height: 9px;
+    border-radius: 2px;
+    background: var(--muted);
+  }
+  .dot.moving { background: var(--moving); }
+  .dot.idle { background: #f2b705; }
+  .dot.alert { background: var(--alert); }
+  .state.mine { background: var(--bg); }
+
+  pre {
+    margin: 0;
+    background: #14151a;
+    color: #f7f7f8;
+    font-family: var(--mono);
+    font-size: var(--t-sm);
+    line-height: 1.7;
+    padding: 16px 18px;
+    border-radius: 6px;
+    overflow-x: auto;
+  }
+  pre .c { color: #9ca3ad; }
+  pre .a { color: #7fb2ff; }
+
+  ul.tight { margin: 8px 0 0; padding-left: 18px; color: var(--fg2); }
+  ul.tight li { margin-bottom: 5px; }
+  ul.tight strong { color: var(--fg); }
+
+  .refuse {
+    border-left: 3px solid var(--alert);
+    background: var(--bg);
+    padding: 12px 16px;
+    margin: 16px 0 4px;
+    color: var(--fg2);
+  }
+  .refuse b { color: var(--fg); }
+
+  footer {
+    margin-top: 30px;
+    padding: 20px 48px 26px;
+    border-top: 1px solid var(--line-strong);
+    display: flex;
+    gap: 28px;
+    flex-wrap: wrap;
+    justify-content: space-between;
+  }
+  footer .col { max-width: 34em; }
+  footer p { margin: 6px 0 0; color: var(--fg2); font-size: var(--t-sm); }
+  footer a { color: var(--fg); text-decoration: none; border-bottom: 1px solid var(--line-strong); }
+  footer a:hover { border-bottom-color: var(--brand); color: var(--brand); }
+  .mono { font-family: var(--mono); font-size: var(--t-xs); }
+
+  /* ---- print: A4, black on white, nothing depends on colour ------------ */
+  @media print {
+    :root {
+      --bg: #fff; --panel: #fff; --fg: #000; --fg2: #333; --muted: #555;
+      --line: #d0d0d0; --line-strong: #000; --brand: #00409c; --brand-tint: #fff;
+    }
+    body { background: #fff; }
+    .sheet { max-width: none; border: 0; }
+    header, section, footer { padding-left: 0; padding-right: 0; }
+    section, tr, .states, figure { break-inside: avoid; }
+    pre { background: #fff; color: #000; border: 1px solid #000; }
+    pre .c, pre .a { color: #333; }
+    .refuse { background: #fff; }
+    a { border: 0; }
+    @page { size: A4; margin: 12mm; }
+  }
+</style>
+</head>
+<body>
+<div class="sheet">
+
+  <header>
+    <div>
+      <div class="label">GPS_Tracer · bench sheet</div>
+      <h1>How a tracker reaches this server</h1>
+    </div>
+    <p class="standfirst">
+      Six hops between a box under a dashboard and a dot on the fleet map.
+      <strong>Every one of them fails silently</strong>, and the symptom is nearly
+      the same each time: nothing appears. Work down the numbered hops, not
+      across the map.
+    </p>
+    <div class="masthead-meta">
+      <div><span class="label">Device</span><b>SinoTrack ST-906L</b></div>
+      <div><span class="label">Protocol</span><b>H02 · outbound TCP</b></div>
+      <div><span class="label">Server port</span><b>5013 in container</b></div>
+      <div><span class="label">Onboarding</span><b>1 command</b></div>
+      <div><span class="label">Reference</span><b>docs/TRACKER-SETUP.md</b></div>
+    </div>
+  </header>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">01</span>
+      <h2>The path</h2>
+      <span class="sec-note">numbered hops, read left to right</span>
+    </div>
+    <p class="lede">
+      The tracker never receives a connection: it <strong>opens one</strong>, out of the
+      vehicle's data session, to this server's public port. That single direction is
+      why a car-park of SIMs behind carrier NAT still works, and why nothing on the
+      server needs a route back into the vehicle.
+    </p>
+
+    <figure>
+      <svg class="viz" viewBox="0 0 1120 372" role="img" aria-labelledby="viz-title viz-desc" preserveAspectRatio="xMidYMid meet">
+        <title id="viz-title">Data path from a GPS tracker to the fleet dashboard</title>
+        <desc id="viz-desc">
+          Six numbered hops. One: SMS provisioning from a phone to the tracker, sent once
+          per unit. Two: the tracker's SIM attaches to the carrier and gets a data session.
+          Three: the tracker opens an outbound TCP connection to port 5013 on the server.
+          Four: Traccar finds a device record for the identifier the tracker sent. Five: the
+          server decodes a real position and stores it in PostgreSQL. Six: the dashboard
+          reads it over the loopback interface and a person sees the vehicle on the map.
+        </desc>
+
+        <!-- zone bands: who operates each segment -->
+        <rect class="zone" x="8" y="4" width="146" height="216" rx="6"></rect>
+        <text class="zone-l" x="20" y="24">BENCH</text>
+        <rect class="zone" x="170" y="4" width="216" height="216" rx="6"></rect>
+        <text class="zone-l" x="182" y="24">IN THE VEHICLE</text>
+        <rect class="zone" x="404" y="4" width="166" height="216" rx="6"></rect>
+        <text class="zone-l" x="416" y="24">PUBLIC INTERNET</text>
+        <rect class="zone" x="588" y="4" width="524" height="216" rx="6"></rect>
+        <text class="zone-l" x="600" y="24">THIS SERVER · LOOPBACK ONLY</text>
+        <rect class="zone" x="588" y="256" width="524" height="104" rx="6"></rect>
+        <text class="zone-l" x="600" y="276">DISPATCHER · HTTPS</text>
+
+        <!-- 1 · the phone -->
+        <rect class="node" x="24" y="70" width="114" height="92" rx="6"></rect>
+        <text class="n-title" x="38" y="100">Your phone</text>
+        <text class="n-sub" x="38" y="120">SMS, once</text>
+        <text class="n-sub" x="38" y="138">per unit</text>
+
+        <!-- 2 · the tracker -->
+        <rect class="node" x="186" y="70" width="184" height="92" rx="6"></rect>
+        <text class="n-title" x="200" y="100">GPS tracker</text>
+        <text class="n-sub" x="200" y="120">SinoTrack ST-906L</text>
+        <text class="n-key" x="200" y="140">IMEI 4210209006</text>
+
+        <!-- 3 · the carrier -->
+        <rect class="node" x="420" y="70" width="134" height="92" rx="6"></rect>
+        <text class="n-title" x="434" y="100">Carrier</text>
+        <text class="n-sub" x="434" y="120">data SIM,</text>
+        <text class="n-sub" x="434" y="138">NAT · no route in</text>
+
+        <!-- 4 · traccar -->
+        <rect class="node node-b" x="604" y="70" width="192" height="92" rx="6"></rect>
+        <text class="n-title" x="618" y="100">Traccar · H02</text>
+        <text class="n-sub" x="618" y="120">decodes the packet</text>
+        <text class="n-key" x="618" y="140">device by uniqueId</text>
+
+        <!-- 5 · postgres -->
+        <rect class="node" x="880" y="70" width="212" height="92" rx="6"></rect>
+        <text class="n-title" x="894" y="100">PostgreSQL</text>
+        <text class="n-sub" x="894" y="120">positions, trips,</text>
+        <text class="n-sub" x="894" y="138">alerts, history</text>
+
+        <!-- 6 · the dashboard -->
+        <rect class="node" x="604" y="290" width="192" height="56" rx="6"></rect>
+        <text class="n-title" x="618" y="315">Fleet dashboard</text>
+        <text class="n-sub" x="618" y="334">the dot on the map</text>
+
+        <!-- hop 1: SMS provisioning, dashed = setup, done once -->
+        <path class="flow-setup" d="M138 116 H180"></path>
+        <path class="head-ink" d="M180 116 l-7 -4 v8 z"></path>
+        <circle class="mark" cx="159" cy="116" r="10"></circle>
+        <text class="mark-t" x="159" y="120" text-anchor="middle">1</text>
+        <text class="tick" x="159" y="96" text-anchor="middle">SMS</text>
+        <text class="tick" x="159" y="146" text-anchor="middle">SETUP</text>
+
+        <!-- hop 2: data session, inside the carrier -->
+        <circle class="mark" cx="487" cy="50" r="10"></circle>
+        <text class="mark-t" x="487" y="54" text-anchor="middle">2</text>
+
+        <!-- hop 3: the one open port, on the running path -->
+        <path class="flow-run" d="M370 116 H414"></path>
+        <path class="head-run" d="M414 116 l-7 -4 v8 z"></path>
+        <path class="flow-run" d="M554 116 H598"></path>
+        <path class="head-run" d="M598 116 l-7 -4 v8 z"></path>
+        <circle class="mark mark-b" cx="576" cy="116" r="10"></circle>
+        <text class="mark-tb" x="576" y="120" text-anchor="middle">3</text>
+        <text class="tick-b" x="576" y="96" text-anchor="middle">TCP</text>
+        <text class="tick-b" x="576" y="146" text-anchor="middle">5013</text>
+
+        <!-- hop 4: the identifier has a device record -->
+        <circle class="mark" cx="781" cy="50" r="10"></circle>
+        <text class="mark-t" x="781" y="54" text-anchor="middle">4</text>
+
+        <!-- hop 5: decode a real position, then store it -->
+        <path class="flow-run" d="M796 116 H874"></path>
+        <path class="head-run" d="M874 116 l-7 -4 v8 z"></path>
+        <circle class="mark" cx="835" cy="116" r="10"></circle>
+        <text class="mark-t" x="835" y="120" text-anchor="middle">5</text>
+
+        <!-- hop 6: the browser reads it -->
+        <path class="flow-run" d="M700 162 V284"></path>
+        <path class="head-run" d="M700 284 l-4 -7 h8 z"></path>
+        <circle class="mark" cx="700" cy="223" r="10"></circle>
+        <text class="mark-t" x="700" y="227" text-anchor="middle">6</text>
+        <text class="tick-b" x="716" y="213">READ · REST</text>
+        <text class="tick-b" x="716" y="228">LOOPBACK ONLY</text>
+        <text class="tick" x="716" y="245">THE DASHBOARD NEVER</text>
+        <text class="tick" x="716" y="260">TALKS TO THE TRACKER</text>
+        <text class="tick-b" x="820" y="96" text-anchor="middle">STORE</text>
+      </svg>
+      <figcaption>
+        Solid = data on the running system &nbsp;·&nbsp; dashed = setup, once per unit &nbsp;·&nbsp;
+        a connector is a flow, a band is a boundary &nbsp;·&nbsp; the same numbers key the table below
+      </figcaption>
+    </figure>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">02</span>
+      <h2>What each hop can be wrong about</h2>
+      <span class="sec-note">one cause, one check</span>
+    </div>
+    <p class="lede">
+      Read the <em>symptom</em> column until you recognise what you are seeing, then run
+      the check beside it. Do not change two things at once — with six silent hops that
+      is how an afternoon disappears.
+    </p>
+    <table>
+      <thead>
+        <tr>
+          <th scope="col">Hop</th>
+          <th scope="col">What has to be true</th>
+          <th scope="col">How it fails, silently</th>
+          <th scope="col">The check</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <th scope="row"><span class="hop">Hop 1</span>SMS provisioning</th>
+          <td>The unit accepts the APN, the server address and the reporting intervals.</td>
+          <td class="sym">An unrecognised command is ignored without a reply. The only symptom is that nothing ever arrives.</td>
+          <td class="chk">Send <code>RCONF</code>. Expect <code>SET OK</code>, and <code>MODE:GPRS</code> with your APN and server in the reply.</td>
+        </tr>
+        <tr>
+          <th scope="row"><span class="hop">Hop 2</span>Data session</th>
+          <td>The SIM attaches, the APN is right, and roaming is covered for every country the trucks reach.</td>
+          <td class="sym">The device has no screen, so a SIM that cannot attach is indistinguishable from dead hardware.</td>
+          <td class="chk">Put the SIM in a phone first. Test it before it goes in the unit.</td>
+        </tr>
+        <tr>
+          <th scope="row"><span class="hop">Hop 3</span>TCP 5013 in</th>
+          <td>The published host port lands on <b>5013 inside the container</b>, where Traccar's H02 listener actually is.</td>
+          <td class="sym">Point the host at any other number and it lands on a different Traccar listener — its <i>watch</i> port is 5093. The stack comes up healthy, accepts the connection, and decodes nothing. This has already happened once here: <span class="mono">UNIMPLEMENTED §7.8</span>.</td>
+          <td class="chk"><code>./scripts/connect-tracker.py --check</code> inspects both sides of the mapping. <span class="mono">traccar.org/port-check</span> proves it from outside the network.</td>
+        </tr>
+        <tr>
+          <th scope="row"><span class="hop">Hop 4</span>Device known</th>
+          <td>Traccar holds a device whose <code>uniqueId</code> is exactly the identifier the unit sends.</td>
+          <td class="sym">The packet arrives and is thrown away: <span class="mono">WARN Unknown device - 865282040015552</span>, and no position is stored. With the allow-list on, a pattern that names only a prefix is refused with that same warning — it must match the whole identifier.</td>
+          <td class="chk"><code>--check</code> reads back the registration state actually in force. <code>--adopt-seen-id &lt;id&gt;</code> creates the device under the identifier the server reported.</td>
+        </tr>
+        <tr>
+          <th scope="row"><span class="hop">Hop 5</span>Real position</th>
+          <td>The unit has a fix, not merely a connection: sky view, and a valid <code>A</code> flag rather than <code>V</code>.</td>
+          <td class="sym">An H02 <span class="mono">HTBT</span> keep-alive arrives on schedule while the map stays empty. A first fix from cold can take fifteen minutes — longer indoors or under a metal roof — so timing out early makes a working unit look broken.</td>
+          <td class="chk">Dashboard: the <code>A</code> flag, and a plausible non-zero speed while moving. Antenna with a clear view of the sky.</td>
+        </tr>
+        <tr>
+          <th scope="row"><span class="hop">Hop 6</span>Read</th>
+          <td>The dashboard reaches Traccar and the tachograph service on the loopback interface, and a person is signed in.</td>
+          <td class="sym">An empty map on a stack whose API answers correctly. Traccar creates no users on a fresh install, so nobody can be signed in at all.</td>
+          <td class="chk"><code>./scripts/smoke-test.sh</code></td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">03</span>
+      <h2>Bringing one up is one command</h2>
+      <span class="sec-note">it does the four server-side steps and then waits</span>
+    </div>
+    <p class="lede">
+      It checks the port mapping, reads back what this server will do with an unknown
+      identifier, creates the device record so nobody drives Traccar's UI, prints the SMS
+      block with your APN and server already substituted — and then waits, because only a
+      stored position is proof.
+    </p>
+    <pre><span class="c"># server side only: is the H02 port really reaching Traccar?</span>
+<a class="a">./scripts/connect-tracker.py</a> --check
+
+<span class="c"># a new unit, from registration to a real position</span>
+<a class="a">./scripts/connect-tracker.py</a> --imei 4210209006 --name AB123CD \
+    --server vps.example.com --apn internet</pre>
+
+    <p class="lede" style="margin-top:22px">
+      It reports one of three states, and they are not the same thing:
+    </p>
+    <div class="states">
+      <div class="state">
+        <span class="dot idle"></span> <span class="label">Hop 4</span>
+        <h3>registered</h3>
+        <p>The device record exists. Nothing has talked to the server yet — the tracker, the SIM or the server address is still wrong.</p>
+      </div>
+      <div class="state mine">
+        <span class="dot idle"></span> <span class="label">Hop 5, partly</span>
+        <h3>reached the server</h3>
+        <p>Packets are arriving. There is no usable fix yet. Wait, move the tracker into the open, and check <code>A</code> versus <code>V</code>.</p>
+      </div>
+      <div class="state">
+        <span class="dot moving"></span> <span class="label">Hops 1–6</span>
+        <h3>positioned</h3>
+        <p>Real coordinates, through the real decoder, on the published port. This is the only state that means it works.</p>
+      </div>
+    </div>
+
+    <p class="lede" style="margin-bottom:8px">
+      Two settings decide what happens at hop 4, and both live in <code>.env</code>:
+    </p>
+    <ul class="tight">
+      <li><strong><code>TRACCAR_REGISTER_UNKNOWN=false</code></strong> (the default) — an unknown identifier is logged and ignored. Register the device first. This is the right setting for a production fleet on a public port.</li>
+      <li><strong><code>TRACCAR_REGISTER_UNKNOWN=true</code></strong> — the device appears by itself, with <code>TRACCAR_REGISTER_UNKNOWN_CATEGORY=truck</code> so its speed and distance are not quietly wrong. Narrow it with <code>TRACCAR_REGISTER_UNKNOWN_REGEX</code>: <span class="mono">42102.*</span>, <em>not</em> <span class="mono">^42102</span>, which matches nothing.</li>
+    </ul>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">04</span>
+      <h2>Before it goes in a vehicle</h2>
+      <span class="sec-note">the part that is not about the network</span>
+    </div>
+    <table>
+      <tbody>
+        <tr>
+          <th scope="row">Power</th>
+          <td><b>VCC to a constant, fused positive</b> — not to ACC. The unit has no internal battery, so on ACC-only it is silent every night and loses its buffer on a power cut. ACC is an input signal for the ignition flag, never the supply.</td>
+        </tr>
+        <tr>
+          <th scope="row">Ground &amp; antenna</th>
+          <td>Chassis ground, cable short, routed away from the alternator and starter. <b>Antenna with a clear view of the sky</b> — that is worth more than any antenna upgrade.</td>
+        </tr>
+        <tr>
+          <th scope="row">Then bench-test</th>
+          <td>Position moving when the tracker moves, ignition following the ACC switch, a sensible reporting interval, no repeated errors in <code>docker compose logs -f traccar</code>.</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="refuse">
+      <b>Two things on this hardware that stay disconnected, deliberately:</b> the
+      remote engine cut-off relay, and voice monitoring. Both are refused by design —
+      see <span class="mono">docs/ST-906L.md § Two capabilities you should refuse</span>.
+      An engine cut-off wired to an unverified unit is a moving-vehicle hazard, not a
+      security feature.
+    </div>
+  </section>
+
+  <section>
+    <div class="sec-head">
+      <span class="sec-num">05</span>
+      <h2>What this sheet does not prove</h2>
+      <span class="sec-note">stated, not implied</span>
+    </div>
+    <p class="lede">
+      The listener, the decoder, the port mapping and the zero-touch path have all been
+      exercised over real H02 traffic by <span class="mono">scripts/simulate-fleet.py</span> and
+      <span class="mono">connect-tracker.py</span>. <strong>No physical unit has ever connected</strong>:
+      the radio link, the SIM, GNSS reception and the ACC wiring are unverified, and
+      <span class="mono">docs/UNIMPLEMENTED.md</span> is the register that says so. Order one
+      tracker, walk this sheet, and only then buy more.
+    </p>
+  </section>
+
+  <footer>
+    <div class="col">
+      <div class="label">Where to go next</div>
+      <p>
+        <a href="TRACKER-SETUP.md">TRACKER-SETUP.md</a> — the full manual version of every hop here, and what to do when one fails.<br>
+        <a href="ST-906L.md">ST-906L.md</a> — this unit's command set, its two capability traps, and the LTE-band question to ask before buying.<br>
+        <a href="TESTING.md">TESTING.md</a> — bench and road acceptance, before a vehicle is signed off.
+      </p>
+    </div>
+    <div class="col">
+      <div class="label">Status of the claims on this sheet</div>
+      <p class="mono">
+        port mapping, auto-registration and the whole-identifier rule: verified on this
+        stack against the Traccar 6.16 image.<br>
+        physical tracker end-to-end: <b>not run</b>.
+      </p>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>

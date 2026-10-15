@@ -84,7 +84,13 @@ tacho_volume() {
   # running-only lookup finds nothing and reports "no tacho volume", quietly
   # skipping the file restore. Which is what it did, once.
   c="$(docker compose -p "$PROJECT" ps -q -a tacho-api 2>/dev/null | head -1)"
-  [ -z "$c" ] && c="$(docker ps -a --filter 'name=gpstracer-tacho-api' --format '{{.Names}}' | head -1)"
+  # Compose labels every container it creates with the service it belongs to, so
+  # this finds `tacho-api` in ANY project — which is the point: the lookup above
+  # needs the right project name, and this fallback is for when it is wrong.
+  # A hard-coded container name used to be here, and it stopped matching the
+  # moment container names became project-prefixed — silently, taking the
+  # tachograph file archive down with it.
+  [ -z "$c" ] && c="$(docker ps -a --filter 'label=com.docker.compose.service=tacho-api' --format '{{.Names}}' | head -1)"
   [ -z "$c" ] && return 0
   vol="$(docker inspect "$c" \
     --format '{{range .Mounts}}{{if eq .Destination "/var/lib/gpstracer/tacho"}}{{.Name}}{{end}}{{end}}')"

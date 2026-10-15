@@ -32,7 +32,12 @@
 # reads like a corruption bug rather than a naming collision.
 #
 # A distinct default makes it impossible. `-p`/COMPOSE_PROJECT_NAME still
-# overrides it, which is how a second copy on one host is kept apart.
+# overrides it, which is how a second copy on one host is kept apart — but ONLY
+# because no service below sets `container_name`. A fixed container name is not
+# prefixed by the project, so two copies on one host collide on the second one
+# before either starts, and `-p` cannot save them. Compose's generated
+# `<project>-<service>-<index>` name is unique per project by construction; use
+# that, and never add `container_name` back to any service in this file.
 name: gpstracer-fleet
 
 services:
@@ -90,6 +95,15 @@ services:
       GEOCODER_KEY: ${GEOCODER_KEY:-}
       # Bootstrap only. See docs/DOKPLOY.md § First run.
       ALLOW_REGISTRATION: ${TRACCAR_ALLOW_REGISTRATION:-false}
+      # Auto-create a device on an unknown identifier's first packet. Off by
+      # default: the H02 port is public, so with it on anything that can reach
+      # the port becomes a device. Turning it on is the zero-touch onboarding
+      # path -- see docs/TRACKER-SETUP.md §4 for the trade-off.
+      REGISTER_UNKNOWN: ${TRACCAR_REGISTER_UNKNOWN:-false}
+      # What an auto-created device looks like, and how far the allow-list reaches.
+      # See the entrypoint's REGISTER_UNKNOWN block; `truck` matches this fleet.
+      REGISTER_UNKNOWN_CATEGORY: ${TRACCAR_REGISTER_UNKNOWN_CATEGORY:-truck}
+      REGISTER_UNKNOWN_REGEX: ${TRACCAR_REGISTER_UNKNOWN_REGEX:-}
     # Traccar 6.16 has no native environment-variable configuration (there is no
     # TRACCAR_* handling in the jar). It only reads conf/traccar.xml. So the
     # entrypoint renders that file from these variables at container start.
@@ -168,7 +182,6 @@ services:
     build:
       context: ./dashboard
     image: gpstracer-dashboard:local
-    container_name: gpstracer-dashboard
     restart: unless-stopped
     depends_on:
       traccar:
@@ -181,6 +194,24 @@ services:
       TACHO_INTERNAL_URL: http://tacho-api:8084
       TACHO_API_TOKEN: ${TACHO_API_TOKEN:?set TACHO_API_TOKEN - see .env.example}
       DASHBOARD_MAX_BODY_BYTES: ${DASHBOARD_MAX_BODY_BYTES:-16777216}
+      # The "Connect a tracker" screen prints the host port the tracker must be
+      # pointed at, which is this one -- the published side of the H02 mapping,
+      # not the container's 5013. Getting those two the wrong way round is
+      # UNIMPLEMENTED.md 7.8.
+      H02_PORT: ${H02_PORT:-5013}
+      TRACCAR_LOG_DIR: /opt/traccar/logs
+    volumes:
+      # Read-only, and only the logs.
+      #
+      # The dashboard needs two facts it cannot get over the API: the onboarding
+      # settings the Traccar container rendered (traccar/config/entrypoint.sh
+      # writes onboarding.json here) and the identifiers Traccar has REFUSED,
+      # which exist only as `WARN: Unknown device - <id>` lines in tracker-server.log.
+      #
+      # conf/ is deliberately NOT mounted. It holds the same file the container
+      # renders -- with the PostgreSQL password in it. Reading that to display a
+      # boolean would widen access to the database for no gain.
+      - traccar-logs:/opt/traccar/logs:ro
     ports:
       # Loopback. Dokploy's proxy terminates TLS in front of it; see docs/DOKPLOY.md.
       - "127.0.0.1:${DASHBOARD_PORT:-8083}:8083"
@@ -209,7 +240,6 @@ services:
     build:
       context: ./tacho
     image: gpstracer-tacho:local
-    container_name: gpstracer-tacho-api
     restart: unless-stopped
     depends_on:
       db:
@@ -243,7 +273,6 @@ services:
     build:
       context: ./tacho
     image: gpstracer-tacho:local
-    container_name: gpstracer-tacho-worker
     restart: unless-stopped
     depends_on:
       db:

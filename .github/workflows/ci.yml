@@ -6,7 +6,8 @@
 #
 #   tacho      the Python suite, logic-only and then database-backed
 #   dashboard  that the dashboard still builds
-#   compose    that the compose file still means what it says
+#   compose    that the compose file, the container-naming rule and the setup
+#              scripts still mean what they say
 #
 # The browser acceptance test (dashboard/scripts/verify.mjs) is NOT here: it
 # needs a whole running stack, a seeded fleet and a Chromium install, which is a
@@ -68,6 +69,30 @@ jobs:
           TACHO_TEST_DATABASE_URL: postgresql://test:test@127.0.0.1:5432/test
         run: python -m pytest tests/ -q
 
+  scripts:
+    name: provisioning tool (Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # No project dependencies on purpose: scripts/connect-tracker.py is
+      # stdlib-only so it runs on whatever Python a technician's laptop has,
+      # and the test needs nothing but pytest. If someone adds an import to that
+      # script, this job is where it shows up.
+      - name: Install pytest
+        run: pip install pytest==8.4.2
+
+      # Two of these tests cross-check the script against docs/TRACKER-SETUP.md.
+      # That is deliberate: the SMS commands are firmware-specific and a wrong one
+      # is not recoverable without the unit in hand, so the tool and the document
+      # have to be edited together or the build fails.
+      - name: connect-tracker tests
+        run: python -m pytest scripts/tests -q
+
   dashboard:
     name: dashboard (build)
     runs-on: ubuntu-latest
@@ -85,6 +110,30 @@ jobs:
 
       - run: npm ci
       - run: npm run build
+
+      # The face is vendored into public/ and Vite copies it into dist/ -- but only
+      # if the Dockerfile puts public/ into the build context. The failure mode is
+      # silent in the worst way: `npm run build` stays green, the image builds, the
+      # container starts, every screen renders, and the entire console falls back to
+      # the platform UI face with no error anywhere. Asserted here because the
+      # browser suite that also covers it needs a running stack and does not run in CI.
+      - name: The vendored font must reach the image
+        run: |
+          grep -q '^COPY public ./public$' Dockerfile
+          ls -l public/fonts/*.woff2
+          ls -l dist/fonts/*.woff2
+          # Vendoring the binary carries its licence with it: OFL 1.1, shipped
+          # beside the files it covers.
+          ls -l public/fonts/OFL.txt
+
+      # The design rules that can be decided without a browser: contrast of every
+      # text token on both surfaces, the weight ceiling, a token-only type scale,
+      # the focus ring, the reduced-motion block, and the font in the built CSS.
+      # Promoted out of `npm run audit:ui`, which measures the stronger thing but
+      # needs a running stack and seeded data and therefore never runs here. Each
+      # rule in it has a negative control that proves it can fail.
+      - name: Design invariants
+        run: npm run check:design
 
   compose:
     name: compose configuration
@@ -125,6 +174,60 @@ jobs:
           grep -q 'target: 5013' /tmp/compose-custom.yml
           echo "h02 host port is configurable and stays on 5013 inside"
 
+          # The zero-touch onboarding switch has to reach the container, because
+          # traccar/entrypoint.sh renders it into traccar.xml from this variable.
+          # A compose edit that dropped it would leave the setting silently at
+          # its default with no error anywhere.
+          grep -q 'REGISTER_UNKNOWN' /tmp/compose-default.yml
+          grep -q 'REGISTER_UNKNOWN_CATEGORY' /tmp/compose-default.yml
+          grep -q 'REGISTER_UNKNOWN_REGEX' /tmp/compose-default.yml
+          echo "the registerUnknown settings reach the container"
+
+          # ...and render them, without a container. The entrypoint writes the XML
+          # before it execs Traccar, so overriding the output path lets the file be
+          # read back; the exec then fails (no java here), which is not the thing
+          # under test. This is the only place the rendered XML is inspected
+          # outside a deployment, and it is where the two documented formatting
+          # traps -- wrong DOCTYPE, and a multi-line properties VALUE -- would show
+          # up, plus the two companion keys the switch needs to be correct.
+          render_register_unknown() {
+            env POSTGRES_DB=traccar POSTGRES_USER=traccar \
+                POSTGRES_PASSWORD=ci-only-not-a-secret \
+                TRACCAR_CONF_PATH=/tmp/traccar.xml "$@" \
+                sh traccar/config/entrypoint.sh >/dev/null 2>&1 || true
+          }
+
+          render_register_unknown REGISTER_UNKNOWN=true \
+            REGISTER_UNKNOWN_CATEGORY=truck REGISTER_UNKNOWN_REGEX='42102.*'
+          grep -qF "key='database.registerUnknown'>true<" /tmp/traccar.xml
+          grep -qF "database.registerUnknown.defaultCategory'>truck<" /tmp/traccar.xml
+          grep -qF "database.registerUnknown.regex'>42102.*<" /tmp/traccar.xml
+          # A category with an XML metacharacter must be escaped, not injected.
+          render_register_unknown REGISTER_UNKNOWN=true REGISTER_UNKNOWN_CATEGORY='a&b'
+          grep -qF "defaultCategory'>a&amp;b<" /tmp/traccar.xml
+          # The anchoring note. Traccar tests the identifier with String.matches(),
+          # so a prefix pattern like ^42102 accepts nothing and does it silently.
+          # Captured to a file rather than piped into `grep -q`: grep exits as soon
+          # as it matches, the entrypoint takes SIGPIPE, and under `pipefail` that
+          # turns a passing check into a red build.
+          env POSTGRES_DB=traccar POSTGRES_USER=traccar \
+              POSTGRES_PASSWORD=ci-only-not-a-secret \
+              TRACCAR_CONF_PATH=/tmp/traccar.xml \
+              REGISTER_UNKNOWN=true REGISTER_UNKNOWN_REGEX='^42102' \
+              sh traccar/config/entrypoint.sh > /tmp/ru-stdout.txt 2>&1 || true
+          grep -q 'WHOLE identifier' /tmp/ru-stdout.txt \
+            || { echo "FAIL: the regex anchoring note is not printed" >&2; exit 1; }
+          echo "the regex anchoring caveat is printed with the warning"
+          # With the switch off, no regex entry may appear: an allow-list that is
+          # rendered but never consulted is worse than none at all.
+          render_register_unknown REGISTER_UNKNOWN=false REGISTER_UNKNOWN_REGEX='42102.*'
+          grep -qF "key='database.registerUnknown'>false<" /tmp/traccar.xml
+          if grep -q 'registerUnknown.regex' /tmp/traccar.xml; then
+            echo "FAIL: the regex is rendered while auto-registration is off" >&2
+            exit 1
+          fi
+          echo "the registerUnknown block renders valid XML for both settings"
+
           # The database must never be published. A mis-merged ports block would
           # be invisible in review and fatal in practice.
           if grep -qE 'published: "5432"' /tmp/compose-default.yml; then
@@ -132,3 +235,90 @@ jobs:
             exit 1
           fi
           echo "PostgreSQL is not published"
+
+          # The dashboard reads two facts out of the Traccar container's log volume
+          # -- the onboarding settings, and the identifiers Traccar refused. It may
+          # have the LOGS. It must never have conf/, which holds the rendered
+          # traccar.xml with the PostgreSQL password in it: mounting that into the
+          # process that faces the browser hands a database credential to the least
+          # trusted component here, to display a boolean.
+          grep -q 'traccar-logs:/opt/traccar/logs:ro' docker-compose.yml
+          # Counted, not merely grepped: the traccar service is supposed to have
+          # this mount, so "is it present" is the wrong question and would fail on a
+          # correct file. The question is whether anything ELSE has it.
+          conf_mounts=$(grep -cE 'traccar-conf:/opt/traccar/conf' docker-compose.yml)
+          if [ "$conf_mounts" != "1" ]; then
+            echo "FAIL: traccar-conf is mounted ${conf_mounts} time(s); exactly one" >&2
+            echo "      service may have it, and only the traccar service: that" >&2
+            echo "      directory holds the rendered traccar.xml with the database" >&2
+            echo "      password in it" >&2
+            exit 1
+          fi
+          echo "the dashboard gets Traccar's logs read-only, and only traccar has its config"
+
+          # The onboarding status file is what the Connect-a-tracker screen reports
+          # as the registration state in force. It has to be valid JSON, so a quote
+          # in an operator-set category cannot break the file the dashboard parses.
+          render_status() {
+            env POSTGRES_DB=traccar POSTGRES_USER=traccar \
+                POSTGRES_PASSWORD=ci-only-not-a-secret \
+                TRACCAR_CONF_PATH=/tmp/traccar-status-conf.xml \
+                TRACCAR_STATUS_DIR=/tmp "$@" \
+                sh traccar/config/entrypoint.sh >/dev/null 2>&1 || true
+          }
+
+          rm -f /tmp/onboarding.json
+          render_status REGISTER_UNKNOWN=true REGISTER_UNKNOWN_CATEGORY=truck \
+            REGISTER_UNKNOWN_REGEX='42102.*'
+          python3 - <<'PY'
+          import json
+          got = json.load(open('/tmp/onboarding.json'))
+          assert got['registerUnknown'] is True, got
+          assert got['defaultCategory'] == 'truck', got
+          assert got['regex'] == '42102.*', got
+          assert got['h02ContainerPort'] == 5013, got
+          print('  the onboarding status file matches the settings that were rendered')
+          PY
+
+          render_status REGISTER_UNKNOWN=false
+          python3 - <<'PY'
+          import json
+          got = json.load(open('/tmp/onboarding.json'))
+          assert got['registerUnknown'] is False, got
+          print('  and reports the switch off when it is off')
+          PY
+
+          render_status REGISTER_UNKNOWN=true REGISTER_UNKNOWN_CATEGORY='a"b'
+          python3 - <<'PY'
+          import json
+          got = json.load(open('/tmp/onboarding.json'))
+          assert got['defaultCategory'] == 'a"b', got
+          print('  and escapes a double quote in the category, so the file stays parseable')
+          PY
+
+          # No service may set a fixed container name. A container_name is not
+          # prefixed by the project, so two copies of this stack on one host
+          # collide on it and the second one cannot start at all -- which is the
+          # documented way to run a second copy. The project-prefixed name Compose
+          # generates is unique by construction; keep it.
+          if grep -qE '^[[:space:]]*container_name:' docker-compose.yml; then
+            echo "FAIL: a service sets container_name, so -p can no longer" >&2
+            echo "      separate two copies on one host" >&2
+            exit 1
+          fi
+          echo "no fixed container names, so the project name separates two copies"
+
+          # Every script here is run by an operator on a working machine, and a
+          # syntax error in one surfaces at the worst possible moment. setup.sh
+          # also has a --check mode that deliberately touches nothing, so its real
+          # preflight can run here: the same code path an operator's first command
+          # takes, minus the containers.
+          for s in scripts/*.sh; do
+            bash -n "$s" || { echo "FAIL: $s does not parse" >&2; exit 1; }
+          done
+          echo "every shell script parses"
+
+          ./scripts/setup.sh --help > /tmp/setup-help.txt
+          grep -q 'Usage:' /tmp/setup-help.txt
+          ./scripts/setup.sh --env-file .env --check
+          echo "setup.sh preflight passes"
