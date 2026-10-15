@@ -220,6 +220,7 @@ network, by Traccar and by the two tachograph containers.
 | [`docs/LIVE-TACHO.md`](docs/LIVE-TACHO.md) | Live/remote tachograph integration: go/no-go, vendors, costs |
 | [`docs/LICENCES.md`](docs/LICENCES.md) | Dependency licence audit, and why an AGPL parser was rejected |
 | [`docs/UNIMPLEMENTED.md`](docs/UNIMPLEMENTED.md) | **Register of everything not done, and why** |
+| [`docs/FLEET-ACCOUNTABILITY.md`](docs/FLEET-ACCOUNTABILITY.md) | Driver identity: what of "who was driving" this system does, and what it deliberately does not |
 
 ---
 
