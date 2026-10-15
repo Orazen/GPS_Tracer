@@ -2,20 +2,16 @@
 // that decides what colour a truck is on the map and which alerts fire, so the
 // dashboard and the alert engine can never disagree.
 
+import { COLOR } from './palette'
+
+export { COLOR }
+
 export const STATE = {
   ALERT: 'alert',
   MOVING: 'moving',
   IDLE: 'idle',
   OFFLINE: 'offline',
   NEVER: 'never',
-}
-
-export const COLOR = {
-  [STATE.ALERT]: '#ef4444',
-  [STATE.MOVING]: '#10b981',
-  [STATE.IDLE]: '#f59e0b',
-  [STATE.OFFLINE]: '#9ca3af',
-  [STATE.NEVER]: '#6b7280',
 }
 
 /**

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, fmtDate, fmtTime } from '../api/traccar'
 import { PRESETS, rangeFor, rangeFromInputs } from '../lib/dates'
 import { computeArrivals } from '../lib/geofence'
+import { SectionGroup } from './Section'
 import FleetMap from './FleetMap'
 
 /**
@@ -147,6 +148,8 @@ export default function TrailHistory({ truck, devices, t, lang }) {
 
   return (
     <div className="history">
+      <div className="hist-head">
+      <SectionGroup icon="clock" title={t('histPeriod')} sub={t('histPeriodWhy')}>
       <div className="hist-bar">
         <div className="hist-presets">
           {PRESETS.map((p) => (
@@ -170,6 +173,8 @@ export default function TrailHistory({ truck, devices, t, lang }) {
         <span className="spacer" />
         <button className="btn ghost" onClick={() => api && window.print()}>{t('print')}</button>
       </div>
+      </SectionGroup>
+      </div>
 
       <div className="hist-grid">
         <div className="hist-map">
@@ -185,6 +190,7 @@ export default function TrailHistory({ truck, devices, t, lang }) {
         </div>
 
         <div className="hist-side">
+          <SectionGroup icon="speed" title={t('histReadings')} sub={t('histReadingsWhy')}>
           <div className="kpis">
             <div className="kpi">
               <b>{distKm == null ? '—' : distKm.toFixed(1)}</b>
@@ -212,9 +218,13 @@ export default function TrailHistory({ truck, devices, t, lang }) {
               {movingH > 0 && ` · ${t('stopped').replace('{d}', fmtDur(movingH * 3600000, t))}`}
             </p>
           )}
+          </SectionGroup>
 
           {err && <p className="err small">{err}</p>}
 
+          {/* The tab lists are `.rows` cards already, so this group sits directly
+              on the side panel rather than wrapping them in a second surface. */}
+          <SectionGroup icon="trip" title={t(tab)} card={null}>
           <div className="subtabs">
             <button className={tab === 'stops' ? 'on' : ''} onClick={() => setTab('stops')}>
               {t('stops')} <i>{stops == null ? '…' : stops.length}</i>
@@ -303,6 +313,7 @@ export default function TrailHistory({ truck, devices, t, lang }) {
               ))}
             </ul>
           )}
+          </SectionGroup>
         </div>
       </div>
     </div>

@@ -1,7 +1,7 @@
 import { ago, fmtDate, fmtTime, km } from '../api/traccar'
 import { STATE, driverOf } from '../lib/status'
 
-export default function TruckPanel({ truck, t, lang, onShowHistory }) {
+export default function TruckPanel({ truck, t, lang, onShowHistory, showDriverName = false }) {
   if (!truck) {
     return (
       <aside className="panel empty">
@@ -40,7 +40,13 @@ export default function TruckPanel({ truck, t, lang, onShowHistory }) {
         )}
         {row(t('ignition'), a.ignition ? t('on') : t('off'))}
         {row(t('mileage'), a.totalDistance != null ? `${km(a.totalDistance)} ${t('km')}` : '—')}
-        {row(t('driver'), driver || t('noDriver'))}
+        {/* Three states, not two. "Unassigned" and "assigned but this account
+            does not display names" are different facts, and printing the first
+            for the second would be a lie somebody could act on. */}
+        {row(
+          t('driver'),
+          !driver ? t('noDriver') : showDriverName ? driver : t('driverHidden')
+        )}
         {row(t('lastSeen'), hasPos ? ago(position.fixTime, lang) : t('never'))}
         {/* sat = satellites tracked. This is the fix-quality signal: a 2.5 m
             accuracy on 4 sats means "estimate", on 9+ means "trust it".

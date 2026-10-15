@@ -11,6 +11,18 @@ export const dict = {
     badLogin: 'Email o password non corretti',
     serverError: 'Server non raggiungibile',
 
+    // Accessible names for controls whose visible context is not a label: a
+    // select sitting in a toolbar, a file picker, a pair of time fields either
+    // side of a dash. Found by `npm run audit:ui`, which reports every control a
+    // screen reader would announce without a name.
+    rptVehicle: 'Veicolo',
+    tachoImportFile: 'File da importare',
+    tachoDocKind: 'Tipo di documento',
+    tachoStatusFilter: 'Filtra per stato',
+    workFrom: 'Inizio turno',
+    workTo: 'Fine turno',
+    skipToContent: 'Salta al contenuto',
+
     fleet: 'Parco mezzi',
     trucks: 'Camion',
     online: 'online',
@@ -18,6 +30,7 @@ export const dict = {
     moving: 'in movimento',
     idle: 'fermo',
     never: 'mai visto',
+    inAlert: 'in allarme',
     noDevices: 'Nessun mezzo. Aggiungi un account in Impostazioni → Gestione utenti.',
     mapUnavailable: 'Mappa non disponibile — i mezzi sono elencati a sinistra',
 
@@ -25,6 +38,22 @@ export const dict = {
     ignition: 'Motore',
     on: 'acceso',
     off: 'spento',
+    /* the unit card's chip row */
+    battery: 'Batteria',
+    bearing: 'Rotta',
+    follow: 'Segui sulla mappa',
+    openHistory: 'Cronologia di questo mezzo',
+    openReports: 'Report di questo mezzo',
+    copyFix: 'Copia la posizione',
+    copied: 'Posizione copiata',
+    noAddress: 'Indirizzo non disponibile',
+    /* the pane's own two controls, and the two explanations under the settings
+       section cards */
+    frameFleet: 'Inquadra tutti i mezzi',
+    hideList: 'Nascondi la lista',
+    showList: 'Mostra la lista',
+    thresholdWhy: 'Quando un mezzo smette di muoversi, e quando smette di rispondere.',
+    workHoursWhy: 'Fuori da questa finestra un motore acceso e’ un allarme.',
     mileage: 'Odometro',
     driver: 'Autista',
     lastSeen: 'Ultimo segnale',
@@ -244,6 +273,194 @@ export const dict = {
     tachoNoAudit: 'Nessuna voce.',
     tachoAuditOwnerOnly:
       'Solo il ruolo "owner" può leggere il registro accessi. Il rifiuto è la risposta corretta, non un errore.',
+
+    // ---- drivers: who is driving which truck ----
+    tachoDrivers: 'Autisti',
+    tachoRegistry: 'Registro autisti',
+    tachoRegistryWhy:
+      "Chi guida quale mezzo. Il registro è la fonte autorevole: ogni assegnazione è datata, mai cancellata, e registrata nel log accessi.",
+    tachoRegistryFoot:
+      "Il mezzo è identificato dal suo identificativo nel sistema di localizzazione (uniqueId), non dal nome: rinominare un mezzo non deve staccarlo dal suo storico.",
+    tachoDriversForbidden:
+      'Il tuo ruolo non può leggere i dati personali degli autisti. Il rifiuto è la risposta corretta, non un errore.',
+    tachoDriverSwitchOff:
+      "Questo account non mostra i nomi degli autisti (Impostazioni). Le assegnazioni restano registrate e riportate al sistema di localizzazione, ma qui nessun nome viene mostrato: mostrarlo insieme agli orari è monitoraggio del lavoratore e in Italia richiede autorizzazione (art. 4, L.300/1970).",
+    tachoName: 'Nome',
+    tachoExternalRef: 'Riferimento aziendale',
+    tachoCard: 'Tessera',
+    tachoNoCardLink: 'nessuna',
+    tachoAddPerson: 'Registra',
+    tachoPersonAdded: 'Autista registrato',
+    tachoNoPeople:
+      "Nessun autista registrato. Registrane uno qui sopra: senza un autista non c'è nulla da assegnare a un mezzo.",
+    tachoVehicle: 'Mezzo',
+    tachoAssignTo: 'Assegna a',
+    tachoAssign: 'Assegna',
+    tachoPickVehicle: 'scegli un mezzo',
+    tachoInactive: 'non attivo',
+    tachoDeactivate: 'Disattiva',
+    tachoReactivate: 'Riattiva',
+    tachoEndAssignment: 'Termina',
+    tachoAssigned: 'Assegnato',
+    tachoAssignmentClosed: 'Assegnazione terminata.',
+    tachoMirrorFailed:
+      'Registrato, ma il sistema di localizzazione non è stato aggiornato: la schermata flotta e gli avvisi mostrano ancora il valore precedente.',
+    tachoMirrorNoTruck:
+      "Registrato, ma nessun mezzo con questo identificativo è presente nella flotta: la schermata flotta non può mostrarlo.",
+    tachoHistory: 'Storico assegnazioni',
+    tachoHistoryWhy:
+      "Le assegnazioni chiuse restano: è ciò che risponde a \"chi guidava quel mezzo il 3\".",
+    tachoPickDriverForHistory: 'Scegli un autista dal registro per vederne lo storico.',
+    tachoNoAssignments: 'Nessuna assegnazione registrata per questo autista.',
+    tachoOpen: 'in corso',
+    tachoNote: 'Nota',
+    driverHidden: 'nome non mostrato (Impostazioni)',
+
+    // ---- connect a tracker (docs/connect-hardware.html, as a screen) ----
+    connect: 'Collega tracker',
+    'onb.title': 'Collega un tracker',
+    'onb.refresh': 'Aggiorna',
+    // Announced while the first /connect/status is in flight. Without it the six
+    // hops render before the server has answered, and hop 2 and 3 read "non
+    // visibile da qui" -- a claim about the server made before asking it.
+    'onb.loading': 'Lettura dello stato del server…',
+    'onb.pickDeviceLabel': 'Mezzo da provare',
+    'onb.imeiLabel': 'Identificativo dell\'unità',
+    'onb.refused.action': 'Azione',
+    'onb.lede':
+      'Sei tappe fra il mezzo e la mappa, e ognuna può fallire in silenzio. Qui vedi quale, adesso.',
+    'onb.statusUnreadable': 'Stato del server non leggibile: {detail}',
+    'onb.subject': 'Identificativo in prova',
+    'onb.pickDevice': 'Scegli un mezzo…',
+    'onb.imeiPlaceholder': 'IMEI dell\'unità',
+    'onb.subjectHint': 'Oppure scegli uno degli identificativi rifiutati, qui sotto.',
+    'onb.hops': 'Le sei tappe',
+    'onb.check': 'come verificarla.',
+    'onb.port.caveat':
+      'La porta pubblicata sull\'host non è visibile da qui: nessun processo dentro questo container può vederla. È l\'errore di UNIMPLEMENTED §7.8, e l\'unico controllo che la copre per intero è connect-tracker.py --check, o traccar.org/port-check da un\'altra rete.',
+
+    'onb.state.ok': 'ok',
+    'onb.state.waiting': 'in attesa',
+    'onb.state.blocked': 'bloccata',
+    'onb.state.blind': 'non visibile da qui',
+
+    'onb.hop.sms': 'Configurazione via SMS',
+    'onb.hop.data': 'Sessione dati',
+    'onb.hop.port': 'TCP 5013 in ingresso',
+    'onb.hop.device': 'Dispositivo riconosciuto',
+    'onb.hop.position': 'Posizione reale',
+    'onb.hop.read': 'Letta dalla dashboard',
+    'onb.hop.unknown': 'questo identificativo',
+
+    'onb.sms.ok': 'L\'unità ha accettato la configurazione: sta inviando posizioni.',
+    'onb.sms.blind':
+      'Si manda via SMS da un telefono. Il server non ha alcuna traccia di quella transazione: da qui non è verificabile, solo la sua conseguenza, una posizione.',
+    'onb.data.ok': 'Un pacchetto da {identifier} è arrivato al server.',
+    'onb.data.waiting':
+      'Nessun pacchetto da {identifier} è ancora arrivato. O la SIM non ha una sessione dati, o l\'unità punta ancora altrove.',
+    'onb.data.blind': 'Lo stato del server non è leggibile, quindi non si sa se sia arrivato qualcosa.',
+    'onb.port.ok':
+      'Il listener h02 di Traccar risponde sulla porta {containerPort} all\'interno della rete. La porta pubblicata è {hostPort}: il tracker va puntato lì.',
+    'onb.port.blocked': 'Il listener h02 non risponde: nessun tracker può connettersi.',
+    'onb.port.blind': 'Il listener non è stato verificato.',
+    'onb.device.ok': 'Esiste il dispositivo {name}, uniqueId {identifier}.',
+    'onb.device.waiting':
+      'Nessun dispositivo per {identifier}. Registralo prima che l\'unità si connetta, altrimenti il server rifiuta i suoi pacchetti.',
+    'onb.device.blocked':
+      'Il server ha letto l\'identificativo {identifier} da {source} e l\'ha RIFIUTATO: non esiste un dispositivo con quell\'uniqueId, e nessuna posizione viene salvata. Puoi crearlo qui sotto, con un clic.',
+    'onb.position.ok': 'Esiste una posizione registrata.',
+    'onb.position.waiting':
+      'Nessuna posizione registrata. Il primo fix a freddo può richiedere fino a 15 minuti, e un heartbeat non è una posizione.',
+    'onb.read.ok':
+      'Stai leggendo questa schermata tramite l\'API di Traccar, con un account amministratore.',
+
+    'onb.diag.all': 'Tutte e sei le tappe passano, per questo identificativo.',
+    'onb.diag.blocked': 'Si ferma alla tappa {n}, {hop}.',
+    'onb.diag.waiting': 'In attesa alla tappa {n}, {hop}.',
+    'onb.diag.blind': 'Tappa {n}: {hop}. Il server non può vederla, quindi non può confermarla né smentirla.',
+
+    'onb.reg.title': 'Cosa farà il server con un identificativo sconosciuto',
+    'onb.reg.unreadable':
+      'Il container Traccar non ha pubblicato le sue impostazioni, quindi qui non si può dire se la registrazione automatica sia attiva. Non viene assunto il valore predefinito: sarebbe la risposta sbagliata metà delle volte.',
+    'onb.reg.switch': 'Registrazione automatica',
+    'onb.reg.on': 'attiva',
+    'onb.reg.off': 'disattivata (predefinito)',
+    'onb.reg.category': 'Categoria assegnata',
+    'onb.reg.regex': 'Identificativi ammessi',
+    'onb.reg.any': 'qualsiasi identificativo',
+    'onb.reg.none': 'nessuna',
+    'onb.reg.consequenceOn':
+      'Un identificativo sconosciuto che raggiunge la porta H02 diventa un dispositivo da solo, con la categoria qui sopra. Più semplice, e un rischio: la porta è su internet, quindi chiunque invii un pacchetto H02 plausibile ottiene una scheda in elenco.',
+    'onb.reg.consequenceOff':
+      'Un identificativo sconosciuto viene decodificato, annotato nel log come "Unknown device" e poi scartato: nessuna posizione viene salvata. Il dispositivo va registrato prima.',
+    'onb.reg.regexCaveat':
+      'Il modello deve corrispondere all\'identificativo INTERO (Traccar usa String.matches): "^42102" non accetta nulla, "42102.*" accetta il lotto.',
+    'onb.reg.registrationOpen':
+      'Registrazione utenti APERTA: chiunque raggiunga la dashboard può crearsi un account. Chiudila (TRACCAR_ALLOW_REGISTRATION=false) e riavvia.',
+
+    'onb.refused.title': 'Identificativi rifiutati dal server',
+    'onb.refused.unreadable':
+      'Il log di Traccar non è leggibile da qui, quindi non si può dire quali identificativi siano stati rifiutati. Il resto della schermata resta valido.',
+    'onb.refused.empty':
+      'Nessun identificativo rifiutato nel log corrente: o un\'unità non si è ancora connessa, o è già registrata.',
+    'onb.refused.hint':
+      'Questi pacchetti sono ARRIVATI ed è stato deciso di scartarli: SIM, rete e porta funzionano. Manca solo la scheda del dispositivo.',
+    'onb.refused.identifier': 'Identificativo',
+    'onb.refused.source': 'Da',
+    'onb.refused.at': 'Quando',
+    'onb.refused.use': 'Usa',
+    'onb.refused.namePlaceholder': 'Targa, es. AB123CD',
+    'onb.refused.nameHint':
+      'Il nome è la targa: è quello che vede il dispatcher. La categoria viene impostata su "truck", perché Traccar ricava velocità e distanza dalla categoria.',
+    'onb.refused.create': 'Registra {identifier}',
+    'onb.refused.creating': 'Registrazione…',
+    'onb.refused.done': 'Dispositivo {name} creato per {identifier}.',
+
+    'onb.sms.title': 'SMS di configurazione',
+    'onb.sms.hint':
+      'Ogni riga è un SMS all\'unità, nell\'ordine del manuale. Un comando non riconosciuto viene ignorato in silenzio: per questo la sequenza finisce con una lettura.',
+    'onb.sms.apn': 'APN',
+    'onb.sms.server': 'IP pubblico del server',
+    'onb.sms.port': 'Porta H02',
+    'onb.sms.acc': 'Intervallo a motore acceso (s)',
+    'onb.sms.parked': 'Intervallo da fermo (s)',
+    'onb.sms.copy': 'Copia gli SMS',
+    'onb.sms.copied': 'Copiati',
+    'onb.sms.copyFailed': 'Copia non riuscita: seleziona il testo e copialo a mano.',
+    'onb.sms.notes':
+      '8040000 vuole un INDIRIZZO IP secondo il manuale; un hostname funziona su alcune unità ma non è documentato. La password dell\'unità è 0000: se è stata cambiata, sostituisci gli zeri in ogni comando. Sotto i 10 secondi l\'unità smette di riportare. E il silenzio non è un successo: leggi la risposta di RCONF.',
+    'onb.sms.why.apn': 'prima di tutto: senza sessione dati non si osserva nulla',
+    'onb.sms.why.server': 'dove mandare i pacchetti',
+    'onb.sms.why.acc': 'motore acceso',
+    'onb.sms.why.parked': 'da fermo, di notte',
+    'onb.sms.why.mode': 'modalità GPRS esplicita, invece del default di fabbrica',
+    'onb.sms.why.readback': 'rileggi le impostazioni: la risposta è l\'unica prova',
+    'onb.sms.problem.apnRequired': 'Serve l\'APN del gestore della SIM.',
+    'onb.sms.problem.serverRequired': 'Serve l\'indirizzo pubblico a cui puntare il tracker.',
+    'onb.sms.problem.portInvalid': 'La porta deve essere un numero fra 1 e 65535.',
+    'onb.sms.problem.intervalFloor':
+      'L\'intervallo minimo è 10 secondi: sotto quella soglia l\'unità smette di riportare.',
+
+    /* The section rows: a group's name, and the line under it that says what the
+       group is for. Added with the third pass, which took the reference's 52px
+       section card from Settings to every other workspace screen. A group whose
+       name already says everything carries no subtitle. */
+    rptFilters: 'Filtri',
+    rptFiltersWhy: 'La finestra e i mezzi che i numeri sotto descrivono.',
+    rptTotals: 'Totali',
+    rptTotalsWhy: 'Chilometri, soste e arrivi nella finestra scelta.',
+    sitesWhy: 'Disegna un sito del cliente sulla mappa: il tabellone confronta gli arrivi con questi.',
+    siteList: 'Siti',
+    histPeriod: 'Periodo',
+    histPeriodWhy: 'La finestra da cui sono tratti il tracciato e le letture.',
+    histReadings: 'Letture',
+    histReadingsWhy: 'Distanza, fix, soste e velocità massima per questa finestra.',
+    tachoUploadWhy: 'Una scarica alla volta: la carta conducente o l\'unità di bordo.',
+    tachoPeriodWhy: 'Conducente e date su cui calcolare attività e risultanze.',
+    tachoCoverageWhy: 'Prima dei numeri: quanti giorni del periodo hanno davvero un dato importato.',
+    tachoRunWhy: 'I calcoli non sono validati contro un rapporto di riferimento.',
+    tachoAuditWhy: 'Chi ha letto o scritto cosa, e quando.',
+
     file: 'File',
     status: 'Stato',
   },
@@ -259,6 +476,14 @@ export const dict = {
     badLogin: 'Wrong email or password',
     serverError: 'Server unreachable',
 
+    rptVehicle: 'Vehicle',
+    tachoImportFile: 'File to import',
+    tachoDocKind: 'Document type',
+    tachoStatusFilter: 'Filter by status',
+    workFrom: 'Shift start',
+    workTo: 'Shift end',
+    skipToContent: 'Skip to content',
+
     fleet: 'Fleet',
     trucks: 'Trucks',
     online: 'online',
@@ -266,6 +491,7 @@ export const dict = {
     moving: 'moving',
     idle: 'idle',
     never: 'never seen',
+    inAlert: 'alert',
     noDevices: 'No trucks. Add a user under Settings → User management.',
     mapUnavailable: 'Map unavailable — trucks are listed on the left',
 
@@ -273,6 +499,22 @@ export const dict = {
     ignition: 'Engine',
     on: 'on',
     off: 'off',
+    /* the unit card's chip row */
+    battery: 'Battery',
+    bearing: 'Bearing',
+    follow: 'Follow on the map',
+    openHistory: 'History for this unit',
+    openReports: 'Reports for this unit',
+    copyFix: 'Copy the position',
+    copied: 'Position copied',
+    noAddress: 'Address not available',
+    /* the pane's own two controls, and the two explanations under the settings
+       section cards */
+    frameFleet: 'Frame the whole fleet',
+    hideList: 'Hide the list',
+    showList: 'Show the list',
+    thresholdWhy: 'When a truck stops moving, and when it stops answering.',
+    workHoursWhy: 'Outside this window a running engine is an alert.',
     mileage: 'Odometer',
     driver: 'Driver',
     lastSeen: 'Last seen',
@@ -491,6 +733,191 @@ export const dict = {
     tachoNoAudit: 'No entries.',
     tachoAuditOwnerOnly:
       'Only the "owner" role may read the access log. The refusal is the correct answer, not an error.',
+
+    // ---- drivers: who is driving which truck ----
+    tachoDrivers: 'Drivers',
+    tachoRegistry: 'Driver registry',
+    tachoRegistryWhy:
+      'Who drives which vehicle. The registry is the record of authority: every assignment is dated, never deleted, and written to the access log.',
+    tachoRegistryFoot:
+      'A vehicle is identified by its identifier in the tracking system (uniqueId), not by its name, so renaming one cannot detach it from its own history.',
+    tachoDriversForbidden:
+      'Your role may not read driver personal data. The refusal is the correct answer, not an error.',
+    tachoDriverSwitchOff:
+      'This account does not show driver names (Settings). Assignments are still recorded and mirrored to the tracking system, but no name is shown here: a name beside working hours is worker monitoring, which in Italy requires authorisation (Art. 4, L.300/1970).',
+    tachoName: 'Name',
+    tachoExternalRef: 'Employer reference',
+    tachoCard: 'Card',
+    tachoNoCardLink: 'none',
+    tachoAddPerson: 'Register',
+    tachoPersonAdded: 'Driver registered',
+    tachoNoPeople:
+      'No drivers registered. Register one above: with no driver there is nothing to assign to a vehicle.',
+    tachoVehicle: 'Vehicle',
+    tachoAssignTo: 'Assign to',
+    tachoAssign: 'Assign',
+    tachoPickVehicle: 'pick a vehicle',
+    tachoInactive: 'inactive',
+    tachoDeactivate: 'Deactivate',
+    tachoReactivate: 'Reactivate',
+    tachoEndAssignment: 'End',
+    tachoAssigned: 'Assigned',
+    tachoAssignmentClosed: 'Assignment ended.',
+    tachoMirrorFailed:
+      'Recorded, but the tracking system was not updated: the fleet screen and the alerts still show the previous value.',
+    tachoMirrorNoTruck:
+      'Recorded, but no vehicle with that identifier is in the fleet, so the fleet screen cannot show it.',
+    tachoHistory: 'Assignment history',
+    tachoHistoryWhy:
+      'Closed assignments stay: that is what answers "who was driving that truck on the 3rd".',
+    tachoPickDriverForHistory: 'Pick a driver from the registry to see their history.',
+    tachoNoAssignments: 'No assignment recorded for this driver.',
+    tachoOpen: 'open',
+    tachoNote: 'Note',
+    driverHidden: 'name not shown (Settings)',
+
+    // ---- connect a tracker (docs/connect-hardware.html, as a screen) ----
+    connect: 'Connect tracker',
+    'onb.title': 'Connect a tracker',
+    'onb.loading': 'Reading the server\'s state…',
+    'onb.pickDeviceLabel': 'Vehicle to test',
+    'onb.imeiLabel': 'Unit identifier',
+    'onb.refused.action': 'Action',
+    'onb.refresh': 'Refresh',
+    'onb.lede':
+      'Six hops between the vehicle and the map, and every one of them can fail in silence. This shows you which one, now.',
+    'onb.statusUnreadable': 'Could not read the server status: {detail}',
+    'onb.subject': 'Identifier under test',
+    'onb.pickDevice': 'Pick a vehicle…',
+    'onb.imeiPlaceholder': 'the unit\'s IMEI',
+    'onb.subjectHint': 'Or use one of the refused identifiers below.',
+    'onb.hops': 'The six hops',
+    'onb.check': 'the command that checks it.',
+    'onb.port.caveat':
+      'The published host port is not visible from here: no process in this container can see it. That is the fault in UNIMPLEMENTED §7.8, and the only check that covers both sides of the mapping is connect-tracker.py --check, or traccar.org/port-check from another network.',
+
+    'onb.state.ok': 'ok',
+    'onb.state.waiting': 'waiting',
+    'onb.state.blocked': 'blocked',
+    'onb.state.blind': 'not visible from here',
+
+    'onb.hop.sms': 'SMS provisioning',
+    'onb.hop.data': 'Data session',
+    'onb.hop.port': 'TCP 5013 in',
+    'onb.hop.device': 'Device known',
+    'onb.hop.position': 'Real position',
+    'onb.hop.read': 'Read by the dashboard',
+    'onb.hop.unknown': 'this identifier',
+
+    'onb.sms.ok': 'The unit accepted the configuration: it is delivering positions.',
+    'onb.sms.blind':
+      'Four SMS sent from a phone. The server has no trace of that transaction, so this hop cannot be verified from here -- only its consequence, a position.',
+    'onb.data.ok': 'A packet from {identifier} has reached the server.',
+    'onb.data.waiting':
+      'Nothing from {identifier} has reached the server yet. Either the SIM has no data session, or the unit is still pointing somewhere else.',
+    'onb.data.blind': 'The server status is unreadable, so whether anything arrived cannot be said.',
+    'onb.port.ok':
+      'Traccar\'s h02 listener answers on port {containerPort} inside the network. The published port is {hostPort}: that is where the tracker must be pointed.',
+    'onb.port.blocked': 'The h02 listener did not answer: no tracker can connect.',
+    'onb.port.blind': 'The listener was not checked.',
+    'onb.device.ok': 'Device {name} exists, uniqueId {identifier}.',
+    'onb.device.waiting':
+      'No device for {identifier} yet. Register it before the unit connects, or the server will refuse its packets.',
+    'onb.device.blocked':
+      'The server read identifier {identifier} from {source} and REFUSED it: there is no device with that uniqueId, and no position is stored. Create it below, in one click.',
+    'onb.position.ok': 'A stored position exists.',
+    'onb.position.waiting':
+      'No stored position yet. A first fix from cold can take up to fifteen minutes, and a heartbeat is not a position.',
+    'onb.read.ok':
+      'You are reading this through Traccar\'s API, signed in as an administrator.',
+
+    'onb.diag.all': 'All six hops pass, for this identifier.',
+    'onb.diag.blocked': 'It stops at hop {n}, {hop}.',
+    'onb.diag.waiting': 'Waiting at hop {n}, {hop}.',
+    'onb.diag.blind': 'Hop {n}: {hop}. The server cannot see this hop, so it can neither confirm nor deny it.',
+
+    'onb.reg.title': 'What this server does with an unknown identifier',
+    'onb.reg.unreadable':
+      'The Traccar container has not published its settings, so whether automatic registration is on cannot be said from here. The default is deliberately not assumed: it would be the wrong answer half the time.',
+    'onb.reg.switch': 'Automatic registration',
+    'onb.reg.on': 'on',
+    'onb.reg.off': 'off (the default)',
+    'onb.reg.category': 'Category assigned',
+    'onb.reg.regex': 'Allowed identifiers',
+    'onb.reg.any': 'any identifier',
+    'onb.reg.none': 'none',
+    'onb.reg.consequenceOn':
+      'An unknown identifier that reaches the H02 port becomes a device by itself, with the category above. Simpler, and a trade: the port is on the public internet, so anything that sends a plausible H02 packet gets a row in the roster.',
+    'onb.reg.consequenceOff':
+      'An unknown identifier is decoded, logged as "Unknown device" and then thrown away: no position is stored. The device has to be registered first.',
+    'onb.reg.regexCaveat':
+      'The pattern must match the WHOLE identifier (Traccar uses String.matches): "^42102" accepts nothing, "42102.*" accepts the batch.',
+    'onb.reg.registrationOpen':
+      'User registration is OPEN: anyone who reaches the dashboard can create an account. Set TRACCAR_ALLOW_REGISTRATION=false and restart.',
+
+    'onb.refused.title': 'Identifiers the server refused',
+    'onb.refused.unreadable':
+      'Traccar\'s log is not readable from here, so which identifiers were refused cannot be said. The rest of this screen is still valid.',
+    'onb.refused.empty':
+      'No refused identifier in the current log: either no unit has connected yet, or it is already registered.',
+    'onb.refused.hint':
+      'These packets ARRIVED and were thrown away: the SIM, the network and the port all work. Only the device record is missing.',
+    'onb.refused.identifier': 'Identifier',
+    'onb.refused.source': 'From',
+    'onb.refused.at': 'When',
+    'onb.refused.use': 'Use',
+    'onb.refused.namePlaceholder': 'Plate, e.g. AB123CD',
+    'onb.refused.nameHint':
+      'The name is the plate: it is what a dispatcher sees. The category is set to "truck", because Traccar derives speed and distance from it.',
+    'onb.refused.create': 'Register {identifier}',
+    'onb.refused.creating': 'Registering…',
+    'onb.refused.done': 'Device {name} created for {identifier}.',
+
+    'onb.sms.title': 'The configuration SMS',
+    'onb.sms.hint':
+      'Each line is one SMS to the unit, in the manual\'s order. An unrecognised command is ignored in silence, which is why the sequence ends by reading the settings back.',
+    'onb.sms.apn': 'APN',
+    'onb.sms.server': 'Server public IP',
+    'onb.sms.port': 'H02 port',
+    'onb.sms.acc': 'Interval, ignition on (s)',
+    'onb.sms.parked': 'Interval, parked (s)',
+    'onb.sms.copy': 'Copy the SMS',
+    'onb.sms.copied': 'Copied',
+    'onb.sms.copyFailed': 'Copy failed: select the text and copy it by hand.',
+    'onb.sms.notes':
+      '8040000 takes an IP ADDRESS per the manual; a hostname works on some units but is not documented. The unit\'s password is 0000: if it was changed, replace those zeros in every command. Below ten seconds the unit stops reporting. And silence is not success: read the RCONF reply.',
+    'onb.sms.why.apn': 'first, because nothing else is observable without a data session',
+    'onb.sms.why.server': 'where to send the packets',
+    'onb.sms.why.acc': 'ignition on',
+    'onb.sms.why.parked': 'parked, overnight',
+    'onb.sms.why.mode': 'GPRS mode explicitly, rather than the factory default',
+    'onb.sms.why.readback': 'read the settings back: the reply is the only evidence',
+    'onb.sms.problem.apnRequired': 'The SIM\'s carrier APN is needed.',
+    'onb.sms.problem.serverRequired': 'The public address to point the tracker at is needed.',
+    'onb.sms.problem.portInvalid': 'The port has to be a number between 1 and 65535.',
+    'onb.sms.problem.intervalFloor':
+      'The floor is 10 seconds: below it the unit stops reporting over GPRS.',
+
+    /* The section rows: a group's name, and the line under it that says what the
+       group is for. Added with the third pass, which took the reference's 52px
+       section card from Settings to every other workspace screen. A group whose
+       name already says everything carries no subtitle. */
+    rptFilters: 'Filters',
+    rptFiltersWhy: 'The window, and the vehicles the numbers below describe.',
+    rptTotals: 'Totals',
+    rptTotalsWhy: 'Mileage, stops and arrivals for the chosen window.',
+    sitesWhy: 'Draw a customer site on the map: the board matches arrivals against these.',
+    siteList: 'Sites',
+    histPeriod: 'Period',
+    histPeriodWhy: 'The window the trail and the readings are drawn from.',
+    histReadings: 'Readings',
+    histReadingsWhy: 'Distance, fixes, stops and top speed for this window.',
+    tachoUploadWhy: 'One download at a time: the driver card or the vehicle unit.',
+    tachoPeriodWhy: 'The driver and the dates to compute activity and findings over.',
+    tachoCoverageWhy: 'Before the figures: how many days of the period actually have an import.',
+    tachoRunWhy: 'The computations are not validated against a reference report.',
+    tachoAuditWhy: 'Who read or wrote what, and when.',
+
     file: 'File',
     status: 'Status',
   },

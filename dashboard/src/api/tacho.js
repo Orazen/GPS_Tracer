@@ -106,7 +106,71 @@ export const tacho = {
   },
 
   // ---- drivers and activity --------------------------------------------
+  /** The CARDS this service has seen. Not the people who hold them: see below. */
   drivers: () => req('/api/drivers', { json: true }),
+
+  // ---- the driver registry ---------------------------------------------
+  // `/api/drivers` above answers "which cards has this service seen"; these answer
+  // "who is driving which truck", which is a different question with a different
+  // table behind it. Everyone here is personal data: every call is refused to a
+  // `viewer` and audited by the service with the forwarded actor and role.
+  people: () => req('/api/people', { json: true }),
+
+  /** Register a person. `card_number` links a card from the registry in the same
+   * action, because registering somebody who holds a card and then linking the
+   * card are never usefully separate. */
+  createPerson: ({ displayName, externalRef, cardNumber } = {}) =>
+    req('/api/people', {
+      method: 'POST',
+      json: true,
+      body: {
+        display_name: displayName,
+        external_ref: externalRef || null,
+        card_number: cardNumber || null,
+      },
+    }),
+
+  setPersonActive: (driverId, active) =>
+    req(`/api/people/${driverId}/active`, { method: 'POST', json: true, body: { active } }),
+
+  vehicleAssignments: ({ driverId, vehicleRef, limit = 200 } = {}) => {
+    const p = new URLSearchParams()
+    if (driverId != null) p.set('driver_id', driverId)
+    if (vehicleRef) p.set('vehicle_ref', vehicleRef)
+    p.set('limit', limit)
+    return req(`/api/vehicle-assignments?${p}`, { json: true })
+  },
+
+  /** Record that a driver is in a vehicle from a date. The tachograph service
+   * closes the driver's previous open assignment rather than deleting it, so the
+   * history stays answerable. */
+  assignVehicle: ({ driverId, vehicleRef, assignedFrom, note } = {}) =>
+    req('/api/vehicle-assignments', {
+      method: 'POST',
+      json: true,
+      body: {
+        driver_id: driverId,
+        vehicle_ref: vehicleRef,
+        assigned_from: assignedFrom || null,
+        note: note || null,
+      },
+    }),
+
+  /** End an assignment without naming a replacement — the only way a driver
+   * leaves a truck. */
+  closeAssignment: (assignmentId, assignedTo) =>
+    req(`/api/vehicle-assignments/${assignmentId}/close`, {
+      method: 'POST',
+      json: true,
+      body: { assigned_to: assignedTo || null },
+    }),
+
+  cardAssignments: ({ driverId, limit = 200 } = {}) => {
+    const p = new URLSearchParams()
+    if (driverId != null) p.set('driver_id', driverId)
+    p.set('limit', limit)
+    return req(`/api/card-assignments?${p}`, { json: true })
+  },
 
   days: ({ driverKey, dateFrom, dateTo, limit = 400 } = {}) => {
     const p = new URLSearchParams()

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import maplibregl from 'maplibre-gl'
 import { COLOR, STATE } from '../lib/status'
+import { NEUTRAL } from '../lib/palette'
 
 // OpenStreetMap raster tiles. Free, no API key, no usage cap, no licence fee.
 // If you later want satellite imagery you swap TILES for a paid provider --
@@ -51,6 +52,7 @@ export default function FleetMap({
   pickMode,          // when set, clicking the map calls onPick(lat,lng)
   onPick,
   geofenceVisible = true,
+  fitToken = 0,          // bumped by the pane's "frame the fleet" button: the effect below depends on it, so a press re-frames the view
   t = (k) => k,          // translator, so the fallback notice is localised too
 }) {
   const el = useRef(null)
@@ -163,7 +165,9 @@ export default function FleetMap({
         // NOTE: WKT here is LATITUDE first, then longitude. This is Traccar's
         // convention and the reverse of what every mapping library expects.
         const [, latS, lonS, radS] = mt
-        return circleFeature(+lonS, +latS, +radS, g.name, g.attributes?.color || '#10b981')
+        // A zone with no colour of its own is neutral, not green: green here
+        // means "moving", and a parked zone is not moving.
+        return circleFeature(+lonS, +latS, +radS, g.name, g.attributes?.color || NEUTRAL)
       })
       .filter(Boolean)
 
@@ -212,7 +216,7 @@ export default function FleetMap({
     if (m.getLayer('trail-line')) return
     m.addLayer({
       id: 'trail-line', type: 'line', source: 'trail',
-      paint: { 'line-color': '#10b981', 'line-width': 3, 'line-opacity': 0.9 },
+      paint: { 'line-color': COLOR[STATE.MOVING], 'line-width': 3, 'line-opacity': 0.9 },
     })
   }, [trail, ready])
 
@@ -262,7 +266,7 @@ export default function FleetMap({
 
     const b = use.reduce((a, p) => a.extend(p), new maplibregl.LngLatBounds(use[0], use[0]))
     m.fitBounds(b, { padding: 90, maxZoom: 14, duration: 600 })
-  }, [trucks, ready])
+  }, [trucks, ready, fitToken])
 
   return (
     <div className="map" ref={el}>

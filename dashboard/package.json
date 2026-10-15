@@ -10,7 +10,10 @@
     "serve": "node server.mjs",
     "start": "node server.mjs",
     "preview": "vite preview --port 5174",
-    "verify": "node scripts/verify.mjs"
+    "verify": "node scripts/verify.mjs",
+    "audit:ui": "node scripts/audit-ui.mjs",
+    "audit:ui:controls": "node scripts/negative-controls.mjs",
+    "check:design": "node scripts/check-design.mjs"
   },
   "dependencies": {
     "maplibre-gl": "^4.7.1",

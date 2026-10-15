@@ -1,28 +1,257 @@
 /* gpstracer fleet dashboard
-   Dark, dense, built for a big wall-mounted monitor in a dispatch office. */
+   Light, dense, and modelled on the operator console a dispatcher already knows:
+   white cards floating over a full-bleed map, one blue accent, 12px corners.
+
+   Why light rather than the dark console this started as. A dispatch office is
+   not a control room -- it is a normal office with the windows open, and half
+   the screens showing this are laptops at a customer site. A light surface is
+   the one that survives both, and it is what the system this replaces looks
+   like, so nobody has to relearn where anything is. */
+
+/* Tokens, named by the job they do rather than by how they look.
+
+   Two jobs, kept strictly apart:
+     --brand                            what you interact with
+                                        (tiles, primary buttons, focus, selection)
+     --moving / --idle / --alert / --offline    what a vehicle is doing
+
+   These used to share a single --accent, so a selected tile and a moving truck
+   were the same green. Each meaning now owns exactly one value, declared here
+   and nowhere else.
+
+   Each status meaning exists twice on purpose:
+     the plain value   a shape -- a map dot, a fill, a 2px line. Saturated, so it
+                       survives on top of light map tiles.
+     the -ink value    an 11-14px glyph on white, darkened until it clears 4.5:1.
+                       #f2b705 amber on white is 1.7:1 and simply unreadable;
+                       darkening it inside the plain value would turn the map dot
+                       into mud. Two values, one meaning, no ambiguity. */
+/* The face, vendored rather than fetched.
+
+   Manrope, self-hosted as two woff2 files under `public/fonts/`: one variable
+   file per unicode subset, weight axis 400-700, ~40KB together. Nothing is
+   requested from a third party -- which is the constraint that decided this,
+   because this dashboard has to come up on a locked-down office network and on a
+   van's tethered tablet, and a blocking cross-origin font request is exactly the
+   dependency that breaks both.
+
+   This replaced `Roboto, 'Helvetica Neue', Helvetica, Arial` (per the reference
+   console). The vendored file removes the objection that chain was there to
+   answer, and the fallbacks below deliberately name no webfont face: they only
+   ever render if the woff2 itself fails to load. */
+@font-face {
+  font-family: 'Manrope';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/manrope-latin.woff2') format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193,
+    U+2212, U+2215, U+FEFF, U+FFFD;
+}
+/* Latin Extended: accented characters outside the Latin-1 block, for place and
+   driver names. Italian itself needs only the block above -- `à`, `è`, `é`, `ì`,
+   `ò` and `ù` are all U+00FF or below -- so this file is for the data, not for
+   the interface. */
+@font-face {
+  font-family: 'Manrope';
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: url('/fonts/manrope-latin-ext.woff2') format('woff2');
+  unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF,
+    U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020,
+    U+20A0-20AB, U+20AD-20C4, U+2113, U+2C60-2C7F, U+A720-A7FF;
+}
 
 :root {
-  --bg: #0b0f14;
-  --bg2: #121821;
-  --panel: #151c26;
-  --line: #1f2937;
-  --fg: #e6edf3;
-  --muted: #8b98a8;
-  --accent: #10b981;
-  --alert: #ef4444;
-  --warn: #f59e0b;
-  --idle: #f59e0b;
-  --offline: #9ca3af;
+  /* surfaces */
+  --bg: #f1f1f1;          /* the page, and the panel a list sits in */
+  --bg2: #f6f6f6;         /* one step lighter, for hover and inset fills */
+  --panel: #ffffff;       /* every card */
+  --line: rgba(25, 25, 28, .12);
+  --line-strong: rgba(25, 25, 28, .22);
+  --fg: #19191c;
+  --fg2: #5c5c5c;
+  /* The reference console's muted grey was #9e9e9e, and it was used as TEXT --
+     every secondary label on every screen. Measured: 2.68:1 against white and
+     2.37:1 against --bg, where the minimum for text at this size is 4.5:1. It
+     was the single worst thing on the sheet and it was on all seven screens.
+
+     #5f686f measures 5.30:1 on white and 4.69:1 on --bg, so it clears the bar on
+     both surfaces. The cost is honest and small: muted is now closer to --fg2 in
+     value, so the third level of hierarchy carries less by lightness and more by
+     size (11-12px against 14px) and hue (a cool slate against a neutral grey).
+     Legibility beat matching a reference that fails the contrast rule.
+
+     #9e9e9e is gone from the sheet entirely: every one of its uses was text.
+     Icons keep --icon below, which is a graphical object and needs 3:1, not 4.5. */
+  --muted: #5f686f;
+  --icon: #757575;
+
+  /* chrome. never a data value. */
+  --brand: #0058ec;
+  --brand-deep: #005693;
+  --brand-ink: #ffffff;
+  --brand-line: rgba(0, 88, 236, .30);
+  --brand-tint: rgba(0, 88, 236, .08);
+
+  /* status, as a shape */
+  --moving: #1fa651;
+  --idle: #f2b705;
+  --warn: #f2b705;
+  --alert: #d92b3a;
+  /* The reference console's own slate, and the one of its four semantic colours
+     that is measurably better than what this sheet had here. As a SHAPE it clears
+     3:1 on both surfaces and beats the #7d868f it replaces: 4.37:1 on a white
+     card and 3.87:1 on the page grey, against 3.70 and 3.27. As a GLYPH it still
+     fails -- 4.37:1 on a card, against a 4.5:1 bar -- so the ink below stays ours
+     and the two-value pairing survives. Per-meaning reasoning and the other three
+     colours: DESIGN-AUDIT.md, "The reference's four semantic colours". */
+  --offline: #607d8b;
+  --never: #a6adb4;
+  --info: #4a90d9;
+
+  /* the same meanings again, as a glyph on white. >= 4.5:1 against #fff. */
+  --moving-ink: #147a3a;
+  --idle-ink: #8a6400;
+  --alert-ink: #c22634;
+  --offline-ink: #5f686f;
+  /* Was #6b7178, which measures 4.93:1 on a white card but only 4.37:1 on the
+     page grey -- and a "never seen" truck renders in the grey roster panel, not
+     on a card. #666d76 clears both (5.23 / 4.63) and stays the lightest of the
+     ink set, which is the hierarchy it is there to carry. Caught by
+     `npm run check:design`, which now refuses a text token that fails either
+     surface. */
+  --never-ink: #666d76;
+  --info-ink: #0066b0;
+
+  /* hairline companions for those glyphs */
+  --moving-line: rgba(31, 166, 81, .32);
+  --idle-line: rgba(242, 183, 5, .42);
+  --alert-line: rgba(217, 43, 58, .32);
+  --info-line: rgba(0, 102, 176, .30);
+
+  /* One type scale, in real numbers: 11 12 14 16 18 20 24. Nothing in this file
+     may invent a size outside it -- that is how a sheet ends up with eleven
+     sizes and no scale. */
+  --t-xs: 11px;
+  --t-sm: 12px;
+  --t-base: 14px;
+  --t-body: 14px;
+  --t-md: 14px;
+  --t-lg: 16px;
+  --t-xl: 18px;
+  --t-2xl: 20px;
+  --t-3xl: 24px;
+
+  /* corners and elevation */
+  /* the detail column's width, so the map's own controls can clear it */
+  --right-w: 360px;
+  /* the fleet pane's width. The reference console fixes its column at this and
+     so do we: every measured value below was taken at 450px inside it (a 403px
+     card, a 92px nav tile, a 40px chip). A fluid column would silently break
+     all of them. */
+  --pane-w: 450px;
+
+  --r-sm: 6px;
+  --r: 8px;
+  --r-lg: 12px;
+  --pill: 999px;
+  --shadow-1: 0 1px 2px rgba(55, 71, 79, .10), 0 1px 0 rgba(55, 71, 79, .06);
+  --shadow-2: 0 4px 10px rgba(55, 71, 79, .12), 0 1px 0 rgba(55, 71, 79, .08);
+
+  /* ---- the reference console's own elevation, measured ----
+
+     Two literal shadows, read out of its `--t-box-shadow` and `--t-box-shadow2`
+     and used here for the same two jobs it uses them for. They are flatter than
+     --shadow-2 on purpose: a card in that console is separated from the page by
+     a single 1px hairline of grey, not by a drop shadow, which is what lets a
+     screen hold ten of them without any of them looking raised. --shadow-2 is
+     still the right value for the one floating thing on the page. */
+  --sh-card: 0 1px 0 rgba(55, 71, 79, .16);
+  --sh-float: 0 4px 4px rgba(55, 71, 79, .08), 0 2px 2px rgba(55, 71, 79, .12);
+
+  /* The reference's four semantic values -- its --q-color-positive #27ae60,
+     -negative #f12323, -warning #005693 and -info #607d8b -- are deliberately NOT
+     adopted here, and that is a measurement rather than a preference. It paints
+     every one of them on a white or grey surface, and at glyph size: #27ae60
+     measures 2.87:1 on a card and 2.54:1 on the page grey, #f12323 4.20:1 and
+     3.71:1. The minimum for a graphical object is 3:1 and for text 4.5:1, so two
+     of the four are below the floor for an icon and all four are below it for a
+     label. `npm run check:design` refused the first draft of this block for
+     exactly that reason.
+
+     The meanings are kept -- ignition is green, a breach is red -- and drawn in
+     the ink values this sheet already declares and already guards, which are the
+     same hues taken dark enough to print: --moving-ink for a live engine,
+     --alert-ink for a fault, --brand-deep where the reference wanted its
+     warning. Nothing new to verify, and one fewer way for a second green to
+     appear on a screen. */
+
+  /* The vertical hairline that separates the pane's tile grid from its own
+     right-hand buttons, and the horizontal one under the title bar. Both are
+     literal measurements, not tastes: 1px #e0e0e0 and 1px #f1f1f1. */
+  --hair: #e0e0e0;
+  --hair-soft: #f1f1f1;
+
+  /* 8px, the gutter between stacked cards in the pane body. The reference uses
+     a 8px `q-gutter-y-sm` there; it is the one spacing value in this sheet that
+     is repeated enough to name. */
+  --gutter: 8px;
 }
 
 * { box-sizing: border-box; }
+
+/* Every control the sheet has not individually styled still has to sit on the
+   scale above. A bare <select> renders at the browser default 13.3333px -- a
+   size this sheet never declares, and, before this rule, the one size on screen
+   that nothing had chosen. Individual rules below still win. */
+button, input, select, textarea { font: inherit; }
+
+/* The weight ceiling, stated once. This sheet declares nothing above 600, and
+   the audit records that as a rule -- but `<strong>`, `<b>` and `<th>` render at
+   the browser default 700 unless something says otherwise, which is how a second
+   and bolder typeface appears on a screen without anyone choosing one. Measured
+   before this rule: 14px/700 twelve times on the history screen and again on
+   zones and connect. Individual rules below still win. */
+strong, b, th { font-weight: 600; }
+
+/* One ring, drawn only for keyboard focus.
+
+   The sheet had a focus treatment on the two text inputs it styles explicitly
+   (`.login input:focus`, `.field input:focus`) and nothing at all on buttons,
+   nav tiles or tabs -- which is the difference between a control that is
+   reachable and one that is merely operable. `:focus-visible` rather than
+   `:focus` so a mouse click does not leave a ring behind. The two rules below
+   still win on their own inputs, where the ring is drawn as a border and a tint
+   instead. */
+:focus-visible { outline: 2px solid var(--brand); outline-offset: 2px; }
+
+/* Physical feedback on press. One rule rather than one per button, because
+   every button in the sheet should answer a press the same way. Translating on
+   the Y axis cannot move anything else: a transform is painted, not laid out. */
+button:not(:disabled):active { transform: translateY(1px); }
+
+/* No orphaned words. These are the two native wrap rules and neither touches a
+   size or a line height: `balance` evens a heading's lines, `pretty` keeps a
+   single word from being pushed onto the last line of body copy. Headings and
+   prose only -- an identifier or a port is a value, not a sentence. */
+h1, h2, h3, .brand { text-wrap: balance; }
+p, li, .hop-why, .onb-lede { text-wrap: pretty; }
 
 html, body, #root { height: 100%; margin: 0; }
 
 body {
   background: var(--bg);
   color: var(--fg);
-  font: 14px/1.45 -apple-system, BlinkMacSystemFont, 'Segoe UI', Inter, Roboto, sans-serif;
+  /* Manrope, vendored above. The fallback chain is the platform UI face and
+     `sans-serif`: it renders only if the woff2 fails to load, and it names no
+     webfont face, so a failed load cannot silently reintroduce the face this
+     replaced. */
+  font-family: Manrope, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  font-size: var(--t-body);
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -30,461 +259,1099 @@ body {
 
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .muted { color: var(--muted); }
-.small { font-size: 12px; }
+.small { font-size: var(--t-sm); }
 .spacer { flex: 1; }
 .row { display: flex; gap: 8px; align-items: center; }
-.err { color: var(--alert); font-size: 13px; }
+.err { color: var(--alert-ink); font-size: var(--t-base); }
 
 /* ---------- login ---------- */
-.login {
-  height: 100%; display: grid; place-items: center;
-  background: radial-gradient(1000px 500px at 50% -10%, #14312a 0%, var(--bg) 60%);
-}
+/* A plain white card, no radial glow behind it. The glow was the login screen
+   every generated dashboard has, and it carried no information. */
+.login { height: 100%; display: grid; place-items: center; background: var(--bg); }
 .login form {
-  width: 340px; background: var(--panel); border: 1px solid var(--line);
-  border-radius: 12px; padding: 28px; display: flex; flex-direction: column; gap: 12px;
+  width: 360px; background: var(--panel); border-radius: var(--r-lg);
+  padding: 30px; display: flex; flex-direction: column; gap: 12px;
+  box-shadow: var(--shadow-2);
 }
-.login h1 { margin: 0 0 4px; font-size: 19px; font-weight: 600; }
+.login h1 { margin: 0 0 4px; font-size: var(--t-2xl); font-weight: 500; }
 .login input {
-  background: var(--bg2); border: 1px solid var(--line); color: var(--fg);
-  padding: 10px 12px; border-radius: 8px; font-size: 14px;
+  background: var(--panel); border: 1px solid var(--line); color: var(--fg);
+  padding: 11px 12px; border-radius: var(--r); font-size: var(--t-body);
 }
-.login input:focus { outline: none; border-color: var(--accent); }
+.login input::placeholder { color: var(--muted); }
+.login input:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-tint); }
 
 /* ---------- brand + buttons ---------- */
-.brand { display: flex; align-items: center; gap: 9px; font-size: 16px; }
-.brand.big { justify-content: center; font-size: 20px; margin-bottom: 6px; }
-.logo {
-  width: 16px; height: 16px; border-radius: 4px;
-  background: linear-gradient(135deg, var(--accent), #059669);
-  display: inline-block;
-}
-.brand.big .logo { width: 22px; height: 22px; }
+.brand { display: flex; align-items: center; gap: 9px; font-size: var(--t-lg); }
+/* 500, not the 700 a <strong> defaults to. The reference console never goes
+   past 500 in chrome; a bold word beside a 500-weight label reads as two
+   different typefaces when it is one. */
+.brand strong { font-weight: 500; }
+.brand.big { justify-content: center; font-size: var(--t-3xl); margin-bottom: 6px; }
+/* Flat, not a gradient. A 16px mark with a gradient on it was the single
+   loudest generated tell in this sheet and it hid the one colour that means
+   "chrome" everywhere else. */
+.logo { width: 18px; height: 18px; border-radius: var(--r-sm); background: var(--brand); display: inline-block; flex: none; }
+.brand.big .logo { width: 24px; height: 24px; }
 
 .btn {
-  background: var(--bg2); border: 1px solid var(--line); color: var(--fg);
-  padding: 8px 14px; border-radius: 7px; cursor: pointer; font-size: 13px;
+  background: var(--panel); border: 1px solid var(--line); color: var(--fg);
+  padding: 8px 14px; border-radius: var(--r); cursor: pointer; font-size: var(--t-base);
   font-family: inherit;
+  /* The custom curve, not the browser default: a press settles rather than
+     stopping dead. Short, because this is a control in a dense console and not
+     an entrance. */
+  transition: background .12s, border-color .12s,
+    transform .12s cubic-bezier(0.32, 0.72, 0, 1);
 }
-.btn:hover { border-color: #374151; }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #04241a; font-weight: 600; }
-.btn.primary:disabled { opacity: .6; cursor: default; }
-.btn.ghost { background: transparent; }
-.btn.wide { width: 100%; padding: 10px; }
+.btn:hover { border-color: var(--line-strong); background: var(--bg2); }
+.btn.primary { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 500; }
+.btn.primary:hover { background: #0050d4; border-color: #0050d4; }
+.btn.primary:disabled { opacity: .55; cursor: default; }
+/* Ghost button TEXT is text, so it uses a text token. It used --icon, which is the
+   graphical token at 4.61:1 on white but 4.08:1 on the page grey -- fine on a
+   card, short of the bar on the grey roster panel, and a ghost button can sit on
+   either. The icons themselves still use --icon, where 3:1 is the rule. */
+.btn.ghost { background: transparent; border-color: transparent; color: var(--muted); }
+.btn.ghost:hover { background: var(--bg2); color: var(--fg); border-color: transparent; }
+.btn.wide { width: 100%; padding: 11px; }
 
 .lang { display: flex; gap: 4px; }
 .lang button {
   background: transparent; border: 1px solid var(--line); color: var(--muted);
-  padding: 4px 10px; border-radius: 6px; cursor: pointer; font: inherit; font-size: 12px;
+  border-radius: var(--r-sm); cursor: pointer; font: inherit; font-size: var(--t-sm);
+  /* 32px square, not 27px tall. These were the smallest real controls in the
+     app: below the 24px floor of WCAG 2.5.8 at some window widths and fiddly at
+     any of them. Padding rather than a font size, so nothing grows visually. */
+  display: inline-flex; align-items: center; justify-content: center;
+  min-height: 32px; min-width: 32px; padding: 4px 10px;
 }
-.lang button.on { border-color: var(--accent); color: var(--accent); }
+.lang button.on { border-color: var(--brand-line); color: var(--brand); font-weight: 500; }
 .login .lang { justify-content: center; margin-top: 4px; }
 
-/* ---------- shell ---------- */
-.app { height: 100%; display: flex; flex-direction: column; }
+/* ---------- shell ----------
+   The map is not a column in a grid, it is the page. Everything else floats on
+   top of it inside a 16px margin, which is what the reference console does and
+   what makes the fleet itself -- not the chrome -- the biggest thing on screen.
+   Panels are pointer-events:none by default so a drag anywhere between two
+   cards still pans the map. */
+.app { position: relative; height: 100%; overflow: hidden; background: var(--bg); }
 
-.topbar {
-  display: flex; align-items: center; gap: 20px;
-  padding: 0 18px; height: 54px; background: var(--panel);
-  border-bottom: 1px solid var(--line); flex: 0 0 auto;
-}
-.tabs { display: flex; gap: 4px; }
-.tab {
-  background: transparent; border: 0; color: var(--muted); cursor: pointer;
-  padding: 16px 12px; font: inherit; font-size: 13px;
-  border-bottom: 2px solid transparent;
-}
-.tab.on { color: var(--fg); border-bottom-color: var(--accent); }
-.topright { margin-left: auto; display: flex; align-items: center; gap: 14px; }
-.who { color: var(--muted); font-size: 12px; }
+.mapwrap { position: absolute; inset: 0; }
+.shell { position: absolute; inset: 16px; display: flex; gap: 16px; pointer-events: none; z-index: 10; }
 
-.statusbar {
-  display: flex; align-items: center; gap: 18px; padding: 8px 18px;
-  background: var(--bg2); border-bottom: 1px solid var(--line);
-  font-size: 12px; color: var(--muted); flex: 0 0 auto;
-}
-.statusbar b { color: var(--fg); font-size: 14px; margin-right: 4px; }
-.stat.s-ok b { color: var(--accent); }
-.stat.s-moving b { color: var(--accent); }
-.stat.s-idle b { color: var(--idle); }
-.stat.s-offline b { color: var(--offline); }
-.stat.s-alert b { color: var(--alert); }
+/* The pane's own width is the measured 450px (--pane-w), set in the geometry
+   block; hiding it hands the whole window to the map. */
+.shell-narrow .pane { display: none; }
+.col-left { width: var(--pane-w, 450px); flex: none; display: flex; flex-direction: column; min-height: 0; gap: 12px; }
+.col-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+/* The detail column scrolls, so unlike the transparent parts of the shell it has
+   to take its own pointer events -- otherwise a wheel over the gap between two
+   panels pans the map instead of scrolling the column. */
+.col-right { width: 360px; flex: none; display: flex; flex-direction: column; gap: 12px; min-height: 0; overflow-y: auto; pointer-events: auto; }
 
-.body { flex: 1; min-height: 0; }
-.layout {
-  height: 100%; display: grid;
-  /* roster | map | selected truck | alerts */
-  grid-template-columns: 250px 1fr 300px 320px;
+/* ---------- navigator ----------
+   The module switcher and the title bar used to be two or three separate white
+   cards with map showing between them. They are now one pane -- a 100px tile
+   grid, a 48px title bar and a grey body, sharing a single 12px radius -- because
+   that is what the reference console is and it is the reason its chrome reads as
+   one instrument. The geometry is measured and written up under "The reference
+   console's own geometry" at the foot of this file; the classes in use here are
+   .pane / .pane__nav / .tiles / .tile / .navright / .pane__header / .pane__body. */
+
+/* The fleet size, as the reference puts it: a rounded chip, not a sentence. */
+.fcount {
+  background: var(--brand-deep); color: #fff; font-size: var(--t-sm); font-weight: 500;
+  border-radius: var(--pill); padding: 2px 10px; font-variant-numeric: tabular-nums;
 }
-.mapwrap { position: relative; min-width: 0; }
-.pad { padding: 22px; overflow: auto; height: 100%; }
-.pad-s { padding: 12px; margin: 0; }
+
+.who { color: var(--muted); font-size: var(--t-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* The account, at the foot of the pane: a white strip inside the pane's own
+   12px radius, above its bottom corner. The reference keeps its account menu in
+   a bottom sheet rather than in the tile grid, and this is the same idea in one
+   line -- an account is not a destination. */
+.pane__foot {
+  flex: none; display: flex; align-items: center; gap: 10px;
+  padding: 8px 16px; background: var(--panel);
+  border-top: 1px solid var(--hair-soft);
+}
+.pane__foot .lang { margin-left: auto; }
+
+/* ---------- cards + panels ---------- */
+.panel {
+  background: var(--panel); border-radius: var(--r-lg); padding: 16px;
+  box-shadow: var(--shadow-2); display: flex; flex-direction: column; gap: 14px;
+  pointer-events: auto;
+}
+.panel.empty { display: grid; place-items: center; min-height: 120px; }
+.phead { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.phead h2 { margin: 0; font-size: var(--t-md); font-weight: 500; }
+.pblock { display: flex; flex-direction: column; gap: 2px; }
+.pblock h3 {
+  margin: 0 0 6px; font-size: var(--t-xs); text-transform: uppercase;
+  letter-spacing: .07em; color: var(--muted); font-weight: 500;
+}
+.pblock.warn { background: rgba(242, 183, 5, .07); border: 1px solid var(--idle-line); border-radius: var(--r); padding: 10px; }
+.pblock.coords { gap: 6px; font-size: var(--t-sm); }
+.pblock.coords > div { display: flex; justify-content: space-between; }
+
+.prow {
+  display: flex; justify-content: space-between; align-items: baseline;
+  padding: 6px 0; border-bottom: 1px solid var(--line); gap: 10px;
+}
+.prow:last-child { border-bottom: 0; }
+.plabel { color: var(--fg2); font-size: var(--t-sm); }
+.pvalue { font-weight: 500; text-align: right; font-variant-numeric: tabular-nums; }
+.phint { display: block; color: var(--muted); font-size: var(--t-xs); font-style: normal; }
+.pvalue.mono, .mono { font-variant-numeric: tabular-nums; }
+/* a bare <strong> is 700, one step past anything else in this sheet */
+.pblock strong { font-weight: 600; }
+
+.badge {
+  font-size: var(--t-xs); padding: 3px 10px; border-radius: var(--pill);
+  border: 1px solid var(--line); color: var(--fg2); white-space: nowrap;
+}
+.badge.s-moving { color: var(--moving-ink); border-color: var(--moving-line); }
+.badge.s-idle { color: var(--idle-ink); border-color: var(--idle-line); }
+.badge.s-alert { color: var(--alert-ink); border-color: var(--alert-line); }
+.badge.s-offline { color: var(--offline-ink); border-color: var(--line); }
+.badge.s-never { color: var(--never-ink); border-color: var(--line); }
+
+.count {
+  font-size: var(--t-xs); color: var(--fg2); background: var(--bg);
+  border-radius: var(--pill); padding: 2px 8px; font-variant-numeric: tabular-nums;
+}
+
+/* The workspace a full-screen view renders into, when the map is not the
+   subject: one white card in the same place, same radius, same elevation. */
+.workspace {
+  background: var(--panel); border-radius: var(--r-lg); box-shadow: var(--shadow-2);
+  flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column;
+  pointer-events: auto;
+}
+.workspace > * { flex: 1; min-height: 0; }
 
 /* ---------- map ---------- */
 .map { position: absolute; inset: 0; }
-.maplibregl-ctrl-group { background: var(--panel) !important; border: 1px solid var(--line) !important; }
-.maplibregl-ctrl-group button + button { border-top: 1px solid var(--line) !important; }
-.maplibregl-ctrl button span { filter: invert(1) brightness(1.4); }
+/* The controls wear the same white-card language as everything else: circular
+   buttons, no border, a real shadow.
+   They are pushed clear of the detail column. MapLibre only knows the four
+   corners of its own canvas, so on a full-bleed map the top-right corner is
+   underneath that column -- the buttons are there, invisible, and the first
+   zoom click lands on the panel instead. --right-w tracks the column's width. */
+.maplibregl-ctrl-top-right { right: calc(var(--right-w, 360px) + 32px); }
+.maplibregl-ctrl-group {
+  background: transparent !important; box-shadow: none !important;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.maplibregl-ctrl-group button {
+  background: var(--panel) !important; border-radius: 50% !important;
+  width: 34px; height: 34px; border: 0 !important; box-shadow: var(--shadow-1) !important;
+}
+.maplibregl-ctrl-group button + button { border-top: 0 !important; }
+.maplibregl-ctrl-group button:hover { background: var(--bg2) !important; }
+.maplibregl-ctrl-group button .maplibregl-ctrl-icon { filter: none; }
+.maplibregl-ctrl-attrib { background: rgba(255, 255, 255, .75) !important; font-size: var(--t-xs); }
 
+/* A marker is a white pill with the state as a dot, because the map underneath
+   is light now and a dark pill on light tiles reads as a hole. */
 .marker {
   background: var(--panel); border: 1px solid var(--line); color: var(--fg);
-  padding: 4px 9px 4px 6px; border-radius: 20px; cursor: pointer;
-  font: 12px/1 -apple-system, sans-serif; white-space: nowrap;
+  padding: 4px 10px 4px 7px; border-radius: var(--pill); cursor: pointer;
+  font-size: var(--t-sm); line-height: 1; font-family: inherit; white-space: nowrap;
   display: flex; align-items: center; gap: 6px;
-  box-shadow: 0 2px 10px rgba(0,0,0,.45);
-  transition: border-color .12s, transform .12s;
+  box-shadow: var(--shadow-2);
+  transition: border-color .12s, color .12s, transform .12s;
 }
 .marker:hover { transform: scale(1.04); }
-.marker.sel { border-color: var(--accent); }
+.marker.sel { border-color: var(--brand); color: var(--brand); font-weight: 500; }
 .marker.alert { border-color: var(--alert); }
 .marker .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
 
-/* ---------- panels ---------- */
-.panel {
-  background: var(--panel); border-left: 1px solid var(--line);
-  padding: 16px; overflow: auto; display: flex; flex-direction: column; gap: 16px;
-}
-.panel.empty { display: grid; place-items: center; }
-.phead { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.phead h2 { margin: 0; font-size: 15px; font-weight: 600; }
-.pblock { display: flex; flex-direction: column; gap: 2px; }
-.pblock h3 { margin: 0 0 6px; font-size: 12px; text-transform: uppercase;
-  letter-spacing: .06em; color: var(--muted); font-weight: 600; }
-.pblock.warn { background: #2a1517; border: 1px solid #4a2024; border-radius: 8px; padding: 10px; }
-.pblock.coords { gap: 6px; font-size: 12px; }
-.pblock.coords > div { display: flex; justify-content: space-between; }
-
-.prow { display: flex; justify-content: space-between; align-items: baseline;
-  padding: 5px 0; border-bottom: 1px solid #1a2230; gap: 10px; }
-.prow:last-child { border-bottom: 0; }
-.plabel { color: var(--muted); font-size: 12px; }
-.pvalue { font-weight: 500; text-align: right; }
-.phint { display: block; color: var(--muted); font-size: 11px; font-style: normal; }
-
-.badge { font-size: 11px; padding: 3px 9px; border-radius: 20px;
-  border: 1px solid var(--line); color: var(--muted); }
-.badge.s-moving { color: var(--accent); border-color: #14503c; }
-.badge.s-idle { color: var(--idle); border-color: #4a3a12; }
-.badge.s-alert { color: var(--alert); border-color: #4a2024; }
-.badge.s-offline, .badge.s-never { color: var(--offline); }
-
-/* ---------- alerts ---------- */
-.alerts { border-left: 1px solid var(--line); }
-.alist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
-.alist li { display: flex; gap: 9px; padding: 8px 6px; border-radius: 7px; }
-.alist li:hover { background: var(--bg2); }
-.alist li .dot { width: 7px; height: 7px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
-.abody { flex: 1; min-width: 0; }
-.atop { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; }
-.atime { color: var(--muted); font-size: 11px; flex: 0 0 auto; }
-.ameta { color: var(--muted); font-size: 11px; margin-top: 1px; }
-.count { color: var(--muted); font-size: 12px; }
-
-/* ---------- settings ---------- */
-.settings { max-width: 620px; }
-.settings h2 { margin: 0 0 18px; font-size: 17px; }
-.settings h3 { margin: 22px 0 10px; font-size: 12px; text-transform: uppercase;
-  letter-spacing: .06em; color: var(--muted); }
-.field { margin-bottom: 14px; }
-.field > label { display: block; font-size: 13px; margin-bottom: 6px; }
-.field input[type=number], .field input[type=time] {
-  background: var(--bg2); border: 1px solid var(--line); color: var(--fg);
-  padding: 8px 10px; border-radius: 7px; width: 130px; font: inherit; font-size: 13px;
-}
-.field.check label { display: flex; align-items: center; gap: 9px; cursor: pointer; font-size: 13px; }
-.warn { color: var(--warn); }
-
-/* ---------- truck roster ----------
+/* ---------- roster ----------
    Deliberately independent of the map. If WebGL is unavailable, tiles time out,
    or the browser tab is backgrounded (which throttles requestAnimationFrame and
    therefore MapLibre's render loop to a standstill), the dispatcher still has
-   to see who is online, who is moving and who has gone quiet. */
-.tlist {
-  border-right: 1px solid var(--line); background: var(--panel);
-  display: flex; flex-direction: column; min-height: 0; min-width: 0;
+   to see who is online, who is moving and who has gone quiet. That information
+   comes from the API, not from OpenStreetMap. */
+/* The roster's own container is the pane's grey body (see `.pane__body`), so
+   there is no second card here: a card inside a card on the same grey was the
+   nesting the reference does not have. */
+/* The roster: a stack of unit cards on the pane's 8px gutter. It has no heading
+   of its own any more -- the pane's title bar is the heading, and a second one
+   inside the body was the same word twice in a 48px span. */
+.ucards {
+  list-style: none; margin: 0; padding: 0;
+  display: flex; flex-direction: column; gap: var(--gutter);
 }
-.tlist .phead { flex: none; }
-.tlist > ul { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1; }
+.pad-s { padding: 12px; margin: 0; }
 
-.trow {
-  width: 100%; display: flex; align-items: center; gap: 9px;
-  padding: 9px 12px; border: 0; border-left: 3px solid transparent;
-  border-bottom: 1px solid var(--line);
-  background: transparent; color: var(--fg); font: inherit; text-align: left;
-  cursor: pointer; transition: background .12s;
-}
-.trow:hover { background: var(--bg2); }
-.trow.on { background: var(--bg2); border-left-color: var(--accent); }
-.tdot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-.tmain { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
-.tname { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tsub { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
-.tdrv { font-size: 10px; color: var(--muted); opacity: .7; flex: none; max-width: 62px;
-        overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.trow.s-offline .tname, .trow.s-never .tname { color: var(--muted); }
-.count {
-  font-size: 11px; color: var(--muted); background: var(--bg2);
-  border-radius: 20px; padding: 1px 7px; font-variant-numeric: tabular-nums;
+/* The state is a word in the chip row, so the card carries no coloured strip and
+   no dot: weight is the only thing that may change with state here, and only for
+   a breach, which is the one state a dispatcher has to see in a list of fifty. */
+.unitcard.s-alert .uc-name { font-weight: 600; }
+.unitcard.s-offline .uc-name, .unitcard.s-never .uc-name { color: var(--fg2); font-weight: 400; }
+
+/* ---------- alerts ---------- */
+.alist { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.alist li { display: flex; gap: 10px; padding: 9px 8px; border-radius: var(--r); }
+.alist li:hover { background: var(--bg2); }
+.alist li .dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 5px; flex: 0 0 auto; }
+.abody { flex: 1; min-width: 0; }
+.atop { display: flex; justify-content: space-between; gap: 8px; font-size: var(--t-base); }
+.atop strong { font-weight: 500; }
+.atime { color: var(--muted); font-size: var(--t-sm); flex: 0 0 auto; }
+.ameta { color: var(--muted); font-size: var(--t-sm); margin-top: 1px; }
+
+/* ---------- generic scrolling body (settings, reports, tacho) ---------- */
+.pad { padding: 20px; overflow: auto; height: 100%; }
+
+/* The screen's own name inside the workspace. 20px/500 -- one step above the
+   pane's 18px title bar, because a workspace has room to say it louder. */
+.ws-title { margin: 0 0 16px; font-size: var(--t-2xl); font-weight: 500; }
+
+/* ---------- the card, at the workspace's size ----------
+   The same object as the pane's unit card, one scale up: white, 12px corners,
+   the reference's 1px hairline instead of a drop shadow. Everything in a
+   workspace that is a group of controls is one of these. */
+.card {
+  background: var(--panel); border-radius: var(--r-lg);
+  box-shadow: var(--sh-card); padding: 16px;
 }
 
-/* ---------- narrow screens ---------- */
-@media (max-width: 1400px) {
-  .layout { grid-template-columns: 220px 1fr 290px; }
-  .alerts { display: none; }
+/* A grouped section: a 52px section card that says what the group is, and the
+   surface of content underneath it. Settings had this object to itself; every
+   workspace screen uses it now, so the name lost the screen it came from. */
+.section-group { display: flex; flex-direction: column; gap: var(--gutter); }
+.section-card { display: flex; flex-direction: column; gap: 14px; }
+
+
+/* ---------- settings ---------- */
+.settings { width: 100%; max-width: 620px; }
+.settings h2 { margin: 0 0 20px; font-size: var(--t-2xl); font-weight: 500; }
+.settings h3 {
+  margin: 24px 0 10px; font-size: var(--t-xs); text-transform: uppercase;
+  letter-spacing: .07em; color: var(--muted); font-weight: 500;
 }
-@media (max-width: 1050px) {
-  .layout { grid-template-columns: 1fr 280px; }
-  .tlist { display: none; }   /* map + selected truck; roster collapses away */
+.field { margin-bottom: 14px; }
+.field > label { display: block; font-size: var(--t-base); margin-bottom: 6px; }
+.field input[type=number], .field input[type=time],
+.field input[type=text], .field input:not([type]), .field select {
+  background: var(--panel); border: 1px solid var(--line); color: var(--fg);
+  padding: 9px 10px; border-radius: var(--r); width: 140px; font: inherit; font-size: var(--t-base);
 }
-@media (max-width: 820px) {
-  .layout { grid-template-columns: 1fr; }
-  .panel { display: none; }
-  .statusbar { overflow-x: auto; }
+/* `type=checkbox` is deliberately absent from the list above: a checkbox with a
+   140px width, a border and 9px of padding is not a checkbox. */
+.field input:focus, .field select:focus { outline: none; border-color: var(--brand); box-shadow: 0 0 0 3px var(--brand-tint); }
+.field.check label { display: flex; align-items: center; gap: 9px; cursor: pointer; font-size: var(--t-base); }
+.warn { color: var(--idle-ink); }
+.ok { color: var(--moving-ink); }
+
+/* ---------- tables ---------- */
+.grid { width: 100%; border-collapse: collapse; font-size: var(--t-base); }
+.grid th {
+  text-align: left; font-size: var(--t-xs); text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); font-weight: 500; padding: 10px;
+  border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--panel);
+}
+.grid td { padding: 9px 10px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.grid .num { text-align: right; font-variant-numeric: tabular-nums; }
+.grid tbody tr:hover { background: var(--bg2); }
+.grid tfoot td { border-bottom: 0; border-top: 1px solid var(--line); }
+.grid .small { font-size: var(--t-sm); color: var(--fg2); }
+.grid .addr { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grid tr.on { background: var(--brand-tint); }
+
+/* ---------- chips, kpis, sub tabs ---------- */
+.chip {
+  background: var(--panel); border: 1px solid var(--line); color: var(--fg2);
+  border-radius: var(--pill); padding: 6px 13px; font: inherit; font-size: var(--t-sm);
+  cursor: pointer; transition: background .12s, border-color .12s, color .12s;
+}
+.chip:hover { border-color: var(--line-strong); color: var(--fg); }
+.chip.on { background: var(--brand); border-color: var(--brand); color: var(--brand-ink); font-weight: 500; }
+
+/* KPI boxes stay equal on purpose: they are peers, and nothing here outranks
+   anything else. Their labels, though, get the room to stay at 11px rather than
+   being shrunk to fit -- the column is sized for the label, not the other way
+   round. */
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+.kpi {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: 10px 11px; display: flex; flex-direction: column; gap: 2px; align-items: center;
+}
+.kpi b { font-size: var(--t-2xl); font-weight: 500; font-variant-numeric: tabular-nums; line-height: 1.15; }
+.kpi span { font-size: var(--t-xs); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; text-align: center; }
+
+.subtabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.subtabs button {
+  background: none; border: 0; border-bottom: 2px solid transparent;
+  color: var(--fg2); font: inherit; font-size: var(--t-base); padding: 8px 12px;
+  cursor: pointer; display: flex; align-items: center; gap: 6px;
+}
+.subtabs button:hover { color: var(--fg); }
+.subtabs button.on { color: var(--brand); border-bottom-color: var(--brand); font-weight: 500; }
+.subtabs i {
+  font-style: normal; font-size: var(--t-xs); background: var(--bg);
+  border-radius: var(--pill); padding: 1px 7px; color: var(--fg2);
 }
 
-/* ---------- map loading + crash ---------- */
-.mapwait {
-  position: absolute; inset: 0; display: grid; place-items: center;
-  color: var(--muted); font-size: 13px; pointer-events: none;
+/* ---------- generic row list ---------- */
+.rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rows li {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: 10px 12px; display: flex; flex-direction: column; gap: 3px;
 }
-.crash { padding: 30px; max-width: 760px; }
-.crash h2 { color: var(--alert); margin: 0 0 10px; }
-.crash pre {
-  background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-  padding: 14px; overflow: auto; font-size: 12px; line-height: 1.5;
-  white-space: pre-wrap; color: var(--fg);
+.rows li.on { border-color: var(--brand); }
+.rowmain { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.addr { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rows.compact li { padding: 7px 11px; }
+
+/* Colour on the glyph, never a tint behind the word. The hairline carries the
+   hue at border weight so the chip still reads as one object. */
+.tag {
+  font-size: var(--t-xs); border-radius: var(--pill); padding: 2px 9px; text-transform: uppercase;
+  letter-spacing: .04em; font-weight: 500; border: 1px solid var(--line);
 }
+.tag.in { color: var(--moving-ink); border-color: var(--moving-line); }
+.tag.out { color: var(--offline-ink); border-color: var(--line); }
+.tag.muted { color: var(--fg2); border-color: var(--line); font-weight: 400; text-transform: none; }
 
 /* ======================================================================
    Trail history
    ====================================================================== */
 .history { height: 100%; display: flex; flex-direction: column; min-height: 0; }
-.hist-bar {
-  display: flex; align-items: center; gap: 12px; padding: 10px 14px;
-  border-bottom: 1px solid var(--line); background: var(--panel); flex: none;
-  flex-wrap: wrap;
-}
+/* The period controls are their own section group above the map, and the bar
+   inside it is a line of the card now rather than a divider across the screen. */
+.hist-head { flex: none; padding: 14px 14px 0; }
+.hist-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .hist-presets { display: flex; gap: 6px; flex-wrap: wrap; }
 .hist-dates { display: flex; align-items: center; gap: 7px; }
 .hist-dates input[type=date] {
-  background: var(--bg2); border: 1px solid var(--line); color: var(--fg);
-  border-radius: 7px; padding: 6px 9px; font: inherit; font-size: 13px;
-  color-scheme: dark;
+  background: var(--panel); border: 1px solid var(--line); color: var(--fg);
+  border-radius: var(--r); padding: 7px 9px; font: inherit; font-size: var(--t-base);
 }
-.chip {
-  background: var(--bg2); border: 1px solid var(--line); color: var(--muted);
-  border-radius: 20px; padding: 5px 12px; font: inherit; font-size: 12px;
-  cursor: pointer; transition: all .12s;
-}
-.chip:hover { color: var(--fg); border-color: var(--muted); }
-.chip.on { background: var(--accent); border-color: var(--accent); color: #04140f; font-weight: 600; }
-
 .hist-grid { flex: 1; display: grid; grid-template-columns: 1fr 400px; min-height: 0; }
 .hist-map { position: relative; min-width: 0; }
 .hist-side {
-  border-left: 1px solid var(--line); background: var(--panel);
-  padding: 14px; overflow-y: auto; display: flex; flex-direction: column; gap: 12px;
+  border-left: 1px solid var(--line); background: var(--bg);
+  padding: 14px; overflow-y: auto; display: flex; flex-direction: column; gap: var(--gutter);
 }
 .hist-range { margin: 0; }
-
-/* ---- KPI strip ---- */
-.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(78px, 1fr)); gap: 8px; }
-.kpi {
-  background: var(--bg2); border: 1px solid var(--line); border-radius: 10px;
-  padding: 9px 10px; display: flex; flex-direction: column; gap: 2px; align-items: center;
-}
-.kpi b { font-size: 19px; font-variant-numeric: tabular-nums; line-height: 1.1; }
-.kpi span { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
-
-/* ---- sub tabs ---- */
-.subtabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
-.subtabs button {
-  background: none; border: 0; border-bottom: 2px solid transparent;
-  color: var(--muted); font: inherit; font-size: 13px; padding: 7px 11px;
-  cursor: pointer; display: flex; align-items: center; gap: 6px;
-}
-.subtabs button.on { color: var(--fg); border-bottom-color: var(--accent); }
-.subtabs i {
-  font-style: normal; font-size: 10px; background: var(--bg2);
-  border-radius: 20px; padding: 1px 6px; color: var(--muted);
-}
-
-/* ---- generic row list ---- */
-.rows { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.rows li {
-  background: var(--bg2); border: 1px solid var(--line); border-radius: 9px;
-  padding: 9px 11px; display: flex; flex-direction: column; gap: 3px;
-}
-.rows li.on { border-color: var(--accent); }
-.rowmain { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
-.addr { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
-.rows.compact li { padding: 6px 10px; }
-
-.tag {
-  font-size: 10px; border-radius: 20px; padding: 2px 8px; text-transform: uppercase;
-  letter-spacing: .03em; font-weight: 600;
-}
-.tag.in { background: rgba(34, 197, 94, .16); color: #4ade80; }
-.tag.out { background: rgba(148, 163, 184, .16); color: #cbd5e1; }
-.tag.muted { background: rgba(148, 163, 184, .14); color: var(--muted); font-weight: 400; text-transform: none; }
 
 /* ======================================================================
    Geofence manager
    ====================================================================== */
 .geo { height: 100%; display: grid; grid-template-columns: 400px 1fr; min-height: 0; }
 .geo-list {
-  border-right: 1px solid var(--line); background: var(--panel);
+  border-right: 1px solid var(--line); background: var(--bg);
   display: flex; flex-direction: column; min-height: 0; overflow-y: auto;
 }
-.geo-list .phead { flex: none; }
-.geo-actions { display: flex; gap: 8px; padding: 12px; flex: none; }
+/* The list column is a stack of section groups now, so the padding that used to
+   be applied per child (a phead, an actions bar, the form, the rows) is applied
+   once by the container. */
+.geo-list > .sections { padding: 14px; }
+.geo-actions { display: flex; gap: 8px; flex: none; }
 .geo-map { position: relative; }
 .geo-form {
-  margin: 0 12px 12px; padding: 12px; background: var(--bg2);
-  border: 1px solid var(--accent); border-radius: 10px;
-  display: flex; flex-direction: column; gap: 9px; flex: none;
+  padding: 14px; background: var(--panel);
+  border: 1px solid var(--brand-line); border-radius: var(--r-lg);
+  display: flex; flex-direction: column; gap: 10px; flex: none;
+  box-shadow: var(--shadow-1);
 }
 .geo-form input[type=text], .geo-form input:not([type=checkbox]) {
-  background: var(--bg); border: 1px solid var(--line); color: var(--fg);
-  border-radius: 7px; padding: 8px 10px; font: inherit; font-size: 13px; width: 100%;
+  background: var(--panel); border: 1px solid var(--line); color: var(--fg);
+  border-radius: var(--r); padding: 9px 10px; font: inherit; font-size: var(--t-base); width: 100%;
 }
 .geo-form .mono { margin: 0; }
 .geo-rad { display: flex; gap: 5px; align-items: center; flex-wrap: wrap; }
 .geo-save { display: flex; gap: 8px; }
-.swatch {
-  width: 24px; height: 24px; border-radius: 6px; border: 2px solid transparent;
-  cursor: pointer; padding: 0;
-}
+.swatch { width: 26px; height: 26px; border-radius: var(--r-sm); border: 2px solid transparent; cursor: pointer; padding: 0; }
 .swatch.on { border-color: var(--fg); }
-.geo-hidden { display: flex; align-items: center; gap: 6px; margin-left: auto; cursor: pointer; }
-.geo-list > .rows { padding: 0 12px 12px; }
-.gdot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-.geo-rowbtns { display: flex; gap: 6px; margin-top: 5px; }
-.btn.tiny { padding: 3px 9px; font-size: 11px; }
-.btn.danger { background: rgba(239, 68, 68, .14); border-color: rgba(239, 68, 68, .4); color: #fca5a5; }
-.btn.danger:hover { background: rgba(239, 68, 68, .24); }
+.geo-hidden { display: flex; align-items: center; gap: 6px; margin-left: auto; cursor: pointer; font-size: var(--t-sm); color: var(--fg2); }
+
+.gdot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.geo-rowbtns { display: flex; gap: 6px; margin-top: 6px; }
+/* 24px tall before this: exactly on the WCAG 2.5.8 floor and below it in
+   practice once a border and a descender are counted. A compact control still
+   has to be a comfortable one. */
+.btn.tiny {
+  min-height: 28px; display: inline-flex; align-items: center;
+  padding: 3px 10px; font-size: var(--t-xs);
+}
+.btn.danger { background: var(--panel); border-color: var(--alert-line); color: var(--alert-ink); }
+.btn.danger:hover { background: rgba(217, 43, 58, .06); border-color: var(--alert); }
+/* The one transient, floating thing on the map: it says what the next click
+   will do, so it sits over the map rather than in the panel. */
 .picking-hint {
-  position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
-  background: var(--accent); color: #04140f; font-size: 12px; font-weight: 600;
-  padding: 7px 15px; border-radius: 20px; pointer-events: none; z-index: 5;
-  box-shadow: 0 3px 14px rgba(0, 0, 0, .5);
+  position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+  background: var(--brand); color: var(--brand-ink); font-size: var(--t-sm); font-weight: 500;
+  padding: 8px 16px; border-radius: var(--pill); pointer-events: none; z-index: 5;
+  box-shadow: var(--shadow-2);
 }
 
 /* ======================================================================
    Reports
    ====================================================================== */
-.reports { display: flex; flex-direction: column; gap: 14px; height: 100%; }
-.rep-bar {
-  display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
-  padding-bottom: 12px; border-bottom: 1px solid var(--line); flex: none;
+/* Reports is a list of section groups now, so the bar is no longer a full-width
+   divider between the top of the workspace and the KPIs: it is the first line of
+   the card its own section row heads, and the rule belonged to the old layout. */
+.reports { display: flex; flex-direction: column; gap: var(--gutter); }
+.rep-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.rep-bar select, .phead select {
+  background: var(--panel); border: 1px solid var(--line); color: var(--fg);
+  border-radius: var(--r); padding: 7px 10px; font: inherit; font-size: var(--t-base); cursor: pointer;
 }
-.rep-bar select {
-  background: var(--bg2); border: 1px solid var(--line); color: var(--fg);
-  border-radius: 7px; padding: 6px 10px; font: inherit; font-size: 13px;
-}
-.spacer { flex: 1; }
-
-.grid { width: 100%; border-collapse: collapse; font-size: 13px; }
-.grid th {
-  text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: .04em;
-  color: var(--muted); font-weight: 600; padding: 9px 10px;
-  border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg);
-}
-.grid td { padding: 8px 10px; border-bottom: 1px solid var(--line); }
-.grid .num { text-align: right; font-variant-numeric: tabular-nums; }
-.grid tbody tr:hover { background: rgba(255, 255, 255, .022); }
-.grid tfoot td { border-bottom: 0; border-top: 1px solid var(--line); }
-.grid .small { font-size: 12px; color: var(--muted); }
-.grid .addr { max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-@media (max-width: 1100px) {
-  .hist-grid, .geo { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
-  .hist-side, .geo-list { border-left: 0; border-right: 0; border-top: 1px solid var(--line); max-height: 46vh; }
+/* A select inside a table row. `.field select` cannot reach one -- that rule
+   needs a form -- and a bare select in a cell keeps the browser's own 23px box,
+   which is under the 28px floor this sheet holds itself to. Measured, not
+   assumed: the driver registry's two row selects were 104x23 until this rule
+   existed, and the audit that caught it is
+   `npm run audit:ui` -> "the tachograph's sub-tabs". */
+.grid select {
+  background: var(--panel); border: 1px solid var(--line); color: var(--fg);
+  border-radius: var(--r); padding: 7px 10px; font: inherit; font-size: var(--t-sm);
+  cursor: pointer;
 }
 
-/* ---------- tachograph ----------
-   The tachograph screens are forms and tables over recorded activity, so they
-   lean on the same panel/kpi/grid primitives as the fleet screens rather than
-   inventing a second look. What is new is the severity scale: a finding is
-   classified as a breach, as unknown, or as informational, and the colour has to
-   mean the same thing in the imports table, the findings list and the run
-   history. One place defines it, everything reuses it. */
-
-.tacho-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.tacho-head h2 { margin: 0 0 4px; font-size: 17px; }
-
-.tacho-body { display: flex; flex-direction: column; gap: 14px; margin-top: 14px; }
+/* ======================================================================
+   Tachograph
+   The screens are forms and tables over recorded activity, so they lean on the
+   same panel/kpi/grid primitives as the fleet screens rather than inventing a
+   second look. What is new is the severity scale: a finding is classified as a
+   breach, as unknown, or as informational, and the colour has to mean the same
+   thing in the imports table, the findings list and the run history.
+   ====================================================================== */
+/* The screen's own name and the versions of the rules it is running, on one
+   line. The groups underneath are section rows, so this is the only heading on
+   the screen that is not one -- it says which screen this is, which is not what
+   a section row is for. */
+.ws-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.ws-head .ws-title { margin: 0; }
+/* `.sections` supplies the column and the gap; this only pushes the first one
+   clear of the screen head above it. */
+.tacho-body { margin-top: var(--gutter); }
 
 /* A permanent statement of scope, not a transient warning. Amber reads as
    "attention", which is right: the numbers below it are computations, not
    legal findings. */
 .notice {
-  background: rgba(245, 158, 11, .1);
-  border: 1px solid rgba(245, 158, 11, .34);
-  border-left-width: 3px;
-  border-radius: 7px;
-  padding: 9px 12px;
-  margin: 10px 0 0;
-  font-size: 12.5px;
-  color: #f7d9a5;
+  background: rgba(242, 183, 5, .08); border: 1px solid var(--idle-line);
+  border-radius: var(--r); padding: 10px 13px; margin: 10px 0 0;
+  font-size: var(--t-sm); color: var(--fg2);
 }
-.notice b { color: var(--warn); }
-
-.ok { color: var(--accent); }
-
+.notice b { color: var(--idle-ink); }
 /* Same trick as .notice: a panel whose contents are not trustworthy says so
-   before you read a figure. */
-.warnpanel { border-left: 3px solid var(--warn); }
+   before you read a figure. A full border and a faint wash, not a strip down
+   one edge. */
+.warnpanel { border: 1px solid var(--idle-line); background: rgba(242, 183, 5, .05); border-radius: var(--r-lg); }
 
 /* ---- severity / status ---- */
+/* Glyph colour and a hairline, no fill. A finding has to mean the same thing in
+   the imports table, the findings list and the run history, so all three read
+   from the same four tokens as the map. */
 .sev {
-  display: inline-block; font-size: 11px; font-weight: 600; text-transform: uppercase;
-  letter-spacing: .04em; padding: 2px 8px; border-radius: 20px;
-  border: 1px solid var(--line); color: var(--muted); white-space: nowrap;
+  display: inline-block; font-size: var(--t-xs); font-weight: 500; text-transform: uppercase;
+  letter-spacing: .05em; padding: 3px 9px; border-radius: var(--pill);
+  border: 1px solid var(--line); color: var(--fg2); white-space: nowrap;
 }
-.sev-breach { color: #fca5a5; border-color: #4a2024; background: rgba(239, 68, 68, .12); }
-.sev-unknown { color: #fcd34d; border-color: #4a3a12; background: rgba(245, 158, 11, .1); }
-.sev-ok { color: #4ade80; border-color: #14503c; background: rgba(16, 185, 129, .12); }
-.sev-muted { color: var(--muted); }
-.sev-error { color: #fca5a5; border-color: #4a2024; background: rgba(239, 68, 68, .12); }
+.sev-breach { color: var(--alert-ink); border-color: var(--alert-line); }
+.sev-unknown { color: var(--idle-ink); border-color: var(--idle-line); }
+.sev-ok { color: var(--moving-ink); border-color: var(--moving-line); }
+.sev-muted { color: var(--fg2); }
+.sev-error { color: var(--alert-ink); border-color: var(--alert-line); }
 
-.rows li.sevli-breach { border-left: 3px solid var(--alert); }
-.finding-msg { margin: 6px 0 4px; font-size: 13px; }
+/* A breach is marked by weight and by its severity chip, not by a red stripe
+   down the edge -- the chip is a word, and a word scans faster than a colour. */
+.rows li.sevli-breach .finding-msg { font-weight: 500; }
+.finding-msg { margin: 6px 0 4px; font-size: var(--t-base); }
 
 /* ---- activity changes ---- */
 .act {
-  font-size: 11px; padding: 2px 8px; border-radius: 20px; white-space: nowrap;
+  font-size: var(--t-xs); padding: 3px 9px; border-radius: var(--pill); white-space: nowrap;
   border: 1px solid var(--line);
 }
 /* Activity is an IntEnum: BREAK_REST=0, AVAILABILITY=1, WORK=2, DRIVING=3.
-   Colours follow the fleet map so "green = moving" holds in both views. */
-.act-0 { color: var(--muted); }
-.act-1 { color: #93c5fd; border-color: #1e3a5f; background: rgba(59, 130, 246, .1); }
-.act-2 { color: #fcd34d; border-color: #4a3a12; background: rgba(245, 158, 11, .1); }
-.act-3 { color: #4ade80; border-color: #14503c; background: rgba(16, 185, 129, .12); }
+   DRIVING reuses the fleet's green so "green = moving" holds in both views. */
+.act-0 { color: var(--fg2); }
+.act-1 { color: var(--info-ink); border-color: var(--info-line); }
+.act-2 { color: var(--idle-ink); border-color: var(--idle-line); }
+.act-3 { color: var(--moving-ink); border-color: var(--moving-line); }
 
 /* ---- form rows ----
    One line of labelled controls. `wrap` lets a narrow window stack them instead
    of overflowing, which is what a laptop at a customer site will do. */
 .field.row { display: flex; align-items: flex-end; gap: 12px; flex-wrap: nowrap; }
 .field.row.wrap { flex-wrap: wrap; }
-.field label.inline { display: flex; flex-direction: column; gap: 5px; font-size: 12px; color: var(--muted); }
+.field label.inline { display: flex; flex-direction: column; gap: 5px; font-size: var(--t-sm); color: var(--fg2); }
 .field select,
 .field input[type=date],
 .field input[type=file] {
-  background: var(--bg2); border: 1px solid var(--line); color: var(--fg);
-  border-radius: 7px; padding: 7px 10px; font: inherit; font-size: 13px;
-  color-scheme: dark; max-width: 320px;
+  background: var(--panel); border: 1px solid var(--line); color: var(--fg);
+  border-radius: var(--r); padding: 8px 10px; font: inherit; font-size: var(--t-base);
+  max-width: 320px;
 }
-.field input[type=file] { padding: 5px 8px; font-size: 12px; }
+.field input[type=file] { padding: 6px 8px; font-size: var(--t-sm); }
 .field label.inline input[type=date],
-.field label.inline input[type=number] { width: 150px; }
-
-/* a button sitting on the same baseline as the controls */
+.field label.inline input[type=number] { width: 160px; }
 .field.row > .btn { margin-bottom: 1px; }
 
 a.btn { text-decoration: none; display: inline-flex; align-items: center; }
 
-.grid tr.on { background: rgba(16, 185, 129, .09); }
-.grid td { vertical-align: top; }
+/* ======================================================================
+   Narrow screens
+   ====================================================================== */
+/* ---------- connect a tracker (onboarding) ---------- */
+/* The printed version of this screen is docs/connect-hardware.html, and the two
+   share one structure on purpose: a numbered list of the same six hops, in the
+   same order, with the state of each stated in words before it is stated in
+   colour. */
+
+.onb-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+/* The screen's own name. It carried no size and no weight at all, so it rendered
+   at the browser's default for an <h2> -- 21px and weight 700, a size this sheet
+   never declares and the one weight above its ceiling. Found by `npm run
+   audit:ui`, whose type census prints what is actually painted rather than what
+   the stylesheet says, and whose `check:design` counterpart can only see the
+   declarations. */
+.onb-head h2 { margin: 0; font-size: var(--t-2xl); font-weight: 500; }
+.onb-lede { max-width: 80ch; margin: 6px 0 14px; }
+
+/* The whole diagnosis, in one line, before the six rows that justify it.
+
+   The state is the same `.badge` a hop row carries, so one state word looks the
+   same wherever it appears and the colour is a second reading of it rather than
+   the only one. There is deliberately no coloured rule down this block's left
+   edge: a coloured side border is the pattern this sheet removed everywhere else
+   (tell 10), and DESIGN-AUDIT.md records that a sweep for one returns empty -- so
+   reintroducing one here would have made that record false. */
+.onb-diag {
+  font-size: var(--t-lg); line-height: 1.45; margin: 0 0 18px;
+  max-width: 84ch;
+  display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap;
+}
+.onb-diag .badge { flex: none; }
+
+/* ---------- loading ----------
+   Shaped like what is coming. A spinner says "wait"; six bars that are about to
+   become six rows say how much is coming and where it will be. Nothing here is
+   interactive, and the one status line is announced instead. */
+.onb-wait { margin: 0 0 18px; }
+.onb-wait-word { display: block; margin-top: 10px; color: var(--fg2); font-size: var(--t-sm); }
+.skel { display: block; background: var(--bg2); border: 1px solid var(--line); border-radius: var(--r-sm); }
+.skel-diag { height: 26px; max-width: 520px; }
+.skel-block { height: 72px; margin: 10px 0 0; }
+.hops-skel { list-style: none; margin: 0; padding: 0; }
+.hop-skel {
+  display: grid; grid-template-columns: 24px 1fr; gap: 12px;
+  padding: 12px 0; border-bottom: 1px solid var(--line);
+}
+.hop-skel:last-child { border-bottom: 0; }
+.skel-n { height: 13px; max-width: 13px; }
+.skel-line { height: 13px; max-width: 460px; }
+
+/* The skip link. Off the viewport until it is focused, then a normal target in
+   the top left. `fixed` rather than `absolute` so it does not depend on which
+   floating panel it happened to be rendered inside -- and `pointer-events: auto`
+   because `.shell` is pointer-transparent by design, so that the map underneath
+   receives a drag that starts between two panels. Without this the link is
+   focusable and unclickable at once, which is worse than not having one. */
+.skip {
+  position: fixed; top: 10px; left: 10px; z-index: 20; pointer-events: auto;
+  transform: translateY(-220%);
+  background: var(--brand); color: var(--brand-ink);
+  padding: 10px 14px; border-radius: var(--r); font-size: var(--t-base);
+  text-decoration: none; box-shadow: var(--shadow-2);
+  transition: transform .12s cubic-bezier(0.32, 0.72, 0, 1);
+}
+.skip:focus { transform: translateY(0); }
+
+/* On a screen reader, off the page. The refused table's last column holds a
+   button whose own label does not say which row it belongs to, so the column
+   needs a name that can be announced. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
+.onb-block { border-top: 1px solid var(--line); padding-top: 14px; margin-top: 22px; }
+.onb-block h3 { margin: 0 0 8px; font-size: var(--t-base); font-weight: 600; }
+
+.hops { list-style: none; margin: 0; padding: 0; }
+.hop {
+  display: grid; grid-template-columns: 24px 1fr; gap: 12px;
+  padding: 12px 0; border-bottom: 1px solid var(--line);
+}
+.hop:last-child { border-bottom: 0; }
+.hop-n {
+  font-family: var(--mono); font-size: var(--t-sm); color: var(--muted);
+  padding-top: 3px; font-variant-numeric: tabular-nums;
+}
+.hop-body { min-width: 0; }
+.hop-top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.hop-why { margin: 5px 0 0; color: var(--fg2); max-width: 88ch; }
+.hop-caveat { margin: 5px 0 0; color: var(--muted); font-size: var(--t-sm); max-width: 88ch; }
+.hop-check { margin: 7px 0 0; display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+.hop-check code {
+  font-family: var(--mono); font-size: var(--t-sm); background: var(--bg2);
+  padding: 2px 6px; border-radius: var(--r-sm); color: var(--fg);
+}
+
+.onb-pick { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.onb-pick select { min-width: 220px; }
+.onb-imei { font-family: var(--mono); min-width: 220px; }
+
+.onb-grid { margin-top: 10px; }
+.onb-grid th { width: 240px; font-weight: 400; color: var(--fg2); border-bottom: 1px solid var(--line); }
+/* Amber, not green: auto-registration being ON is a deliberate state with a real
+   cost on a public port, so it reads the way every other "attention" value in
+   this sheet reads. */
+.onb-grid td.on { color: var(--idle-ink); font-weight: 500; }
+.onb-adopt { margin-top: 14px; }
+.onb-adopt input { min-width: 260px; }
+
+.onb-sms-form {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 0 16px; margin: 10px 0 4px;
+}
+.onb-sms-form .field input { width: 100%; }
+.onb-sms-foot { display: flex; gap: 16px; align-items: baseline; margin-top: 10px; flex-wrap: wrap; }
+.onb-sms-foot p { margin: 0; max-width: 68ch; }
+.onb-problems { margin: 0; padding-left: 18px; }
+
+/* The one dark surface on this screen, and the same one the printed sheet uses:
+   a block of commands to send is a terminal, and giving it the page's white card
+   treatment would make it read as something to read rather than something to
+   send. */
+.sms {
+  list-style: none; margin: 0; padding: 12px 14px;
+  background: #14151a; border-radius: var(--r);
+  display: flex; flex-direction: column;
+}
+.sms li {
+  display: flex; gap: 14px; align-items: baseline;
+  padding: 5px 0; border-bottom: 1px solid rgba(255, 255, 255, .08);
+}
+.sms li:last-child { border-bottom: 0; }
+.sms code {
+  font-family: var(--mono); font-size: var(--t-base); color: #f7f7f8;
+  background: none; padding: 0; white-space: nowrap;
+}
+.sms li .muted { color: #9ca3ad; flex: 1 1 auto; }
+
+/* A red-tinted variant of .notice. The existing one is amber, which is the right
+   colour for "read this before the numbers"; this is for a fact that is wrong
+   rather than merely worth attention. */
+.notice.bad { background: rgba(217, 43, 58, .06); border-color: var(--alert-line); }
+.notice.bad code { color: var(--fg); }
+
+/* The pane's column narrows at these widths -- `--pane-w` in the geometry block
+   at the foot of this file -- rather than `.col-left` carrying its own widths,
+   so there is one number for the column and not two that can disagree. */
+@media (max-width: 1300px) {
+  :root { --right-w: 320px; }
+  .col-right { width: 320px; }
+}
+@media (max-width: 1100px) {
+  /* the detail column collapses; the roster is the one that must not */
+  :root { --right-w: 0px; }
+  .col-right { display: none; }
+  .hist-grid, .geo { grid-template-columns: 1fr; grid-template-rows: 1fr auto; }
+  .hist-side, .geo-list { border-left: 0; border-right: 0; border-top: 1px solid var(--line); max-height: 46vh; }
+}
+/* Very narrow: a phone, or a tablet in the van held upright.
+
+   Below about 520px the roster (260px) and the workspace cannot share a row, so
+   the workspace was being laid out at x=300 inside a 320px viewport and clipped
+   at the right edge with no way to scroll to it. Measured with `npm run audit:ui`,
+   which reports the outermost element past the edge and its box.
+
+The causes were specific and are fixed specifically: hard `min-width: 220px` on
+   the identifier fields, and rows that could not wrap. The two columns stack
+   instead of sharing a row, and the roster is capped so the page itself never
+   needs vertical scrolling -- a panel that scrolls is fine, a page that scrolls
+   in two directions is the failure WCAG 1.4.10 names. */
+@media (max-width: 520px) {
+  .shell { flex-direction: column; gap: 10px; }
+  .pane { width: 100%; flex: none; max-height: 40vh; }
+  .col-main { flex: 1; min-height: 0; }
+  .field.row, .hist-dates, .onb-pick, .onb-sms-foot, .onb-adopt { flex-wrap: wrap; }
+  .onb-pick select, .onb-imei, .onb-adopt input { min-width: 0; width: 100%; max-width: none; }
+  .onb-sms-form { grid-template-columns: 1fr; }
+  /* A data table cannot reflow below its own min-content width, and WCAG 1.4.10
+     allows a two-dimensional region for content whose meaning needs one -- a
+     table is the canonical example. What it does not allow is the table being
+     cut off with no way to reach it, which is what was happening: the page did
+     not scroll, so the last columns were simply gone. It scrolls inside itself. */
+  .grid { display: block; overflow-x: auto; max-width: 100%; }
+}
+
+@media (max-width: 860px) {
+  .shell { inset: 10px; gap: 10px; }
+  /* The tile grid drops to three columns and the right-hand column of controls
+     narrows, both in the geometry block below. The title keeps its size: the
+     scale is not allowed to shrink to make something fit. */
+}
+
+/* ---------- map loading + crash ---------- */
+.mapwait {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  color: var(--fg2); font-size: var(--t-base); pointer-events: none;
+}
+.crash { padding: 30px; max-width: 760px; }
+.crash h2 { color: var(--alert-ink); margin: 0 0 10px; }
+.crash pre {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--r-lg);
+  padding: 14px; overflow: auto; font-size: var(--t-sm); line-height: 1.5;
+  white-space: pre-wrap; color: var(--fg); box-shadow: var(--shadow-1);
+}
+
+/* ---------- motion ----------
+   One deliberate moment, not scattered effects. Changing screen settles the
+   panel into place: 10px over 180ms on the same curve as the press state. The
+   text is legible from the first frame and nothing is delayed by it, which is
+   the only kind of motion an eight-hour console can afford.
+
+   It is on `.workspace` and keyed on the view in App.jsx, so it runs once per
+   screen change. It is deliberately NOT on the fleet panels: those re-render
+   every five seconds as positions arrive, and an entrance that replays on every
+   poll is a flicker, not a flourish. */
+@keyframes rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+.workspace { animation: rise .18s cubic-bezier(0.32, 0.72, 0, 1) both; }
+
+/* Honour the system setting, and mean it. Everything above trades on motion for
+   feedback -- the press, the skip link, the screen change -- so a reader who has
+   asked for less movement gets the end state with no transition to it. The skip
+   link in particular must still become visible, so it is repositioned rather
+   than un-animated. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+  .skip { transition: none !important; }
+}
+
+/* ======================================================================
+   The reference console's own geometry
+   ======================================================================
+
+   Everything from here down is a *measurement* of the live operator console at
+   https://demo-forguard.gps-trace.com/ (Vue 2 + Quasar + Leaflet), taken by
+   walking its DOM and reading getComputedStyle rather than by looking at a
+   screenshot. It is the second pass: the first matched the palette and the type
+   scale, this one matches the frame -- the panel's proportions, the tile grid,
+   the title bar, and the anatomy of a unit card down to its separators.
+
+   The numbers, all read off its own elements:
+
+     panel column         450px wide, 12px top corners
+     nav strip            100px: a 4-column grid of 92x48 tiles beside a 74px
+                          column of two 48px buttons, split by a 1px #e0e0e0 rule
+                          inset 16px top and bottom
+     title bar            48px, padding 0 24px 0 28px, 1px #f1f1f1 underline,
+                          an 18px/500 centred title between a 44px filter button
+                          and a 34px unit chip
+     body                 #f1f1f1, 12px bottom corners, padding 8px 16px 16px,
+                          cards stacked on an 8px gutter
+     card                 403x252 inside that column: white, 12px corners,
+                          `0 1px 0 rgba(55,71,79,.16)`, padding 16px 16px 16px 12px
+     card head            40px: 28px unit-type glyph, 14px/500 name, 12px #5c5c5c
+                          status line with its own icon
+     action row           nine 40x48 tiles, each holding a 40x40 rounded-12
+                          button at font-size 20px
+     address row          49px: a 20px #757575 glyph, the address at 14px, the age
+                          at 12px #9e9e9e
+     chip row             1px rgba(92,92,92) top rule, chips at 0 8px padding with
+                          1px right rules, a 20px semantic glyph then 14px text
+
+   What is deliberately NOT copied, and why:
+
+     Roboto. The reference's body face. This sheet vendors Manrope instead -- a
+       self-hosted woff2 pair under `public/fonts/`, which is the constraint this
+       dashboard actually has (a locked-down office network and a tethered van
+       tablet cannot depend on a cross-origin font request). Recorded in
+       DESIGN-AUDIT.md as the one intentional deviation.
+     #9e9e9e as text. The reference uses it for every secondary label; it measures
+       2.68:1 on white. `--muted` stands in at 5.30:1. Icons keep the literal
+       #757575, which at 4.61:1 clears the 3:1 a graphical object needs.
+     Its information architecture. These are our screens with our data; what is
+       copied is the frame and the vocabulary, not the sitemap.
+   ====================================================================== */
+
+/* ---------- the pane ----------
+   One continuous object: nav strip, title bar, grey body. The three used to be
+   three separate cards with 12px of map showing between them, which is why the
+   console read as a pile of widgets rather than as one instrument. */
+.pane {
+  width: var(--pane-w); flex: none; min-height: 0;
+  display: flex; flex-direction: column;
+  background: var(--panel); border-radius: var(--r-lg);
+  box-shadow: var(--shadow-2); overflow: hidden; pointer-events: auto;
+}
+
+/* ---------- the nav strip ---------- */
+/* 104px, not the 100px the reference declares. Its tile grid is 92x48 with 4px
+   padding on the strip, which is 96 + 8 = 104 of content inside a 100px box: it
+   overflows by exactly 4px and paints over its own bottom rule. Measured, not
+   guessed -- the strip box reads 100 and the row inside it reads 108. Reproducing
+   the box would mean clipping or squashing the tiles, and the tiles are the part
+   anyone actually sees, so here the box is the one that fits the tiles. */
+.pane__nav {
+  flex: none; height: 104px; padding: 4px;
+  display: flex; align-items: stretch;
+  background: var(--panel); border-bottom: 1px solid var(--hair-soft);
+}
+/* 4 x 2 at exactly 48px a row, zero gutter. */
+.tiles { flex: 1; min-width: 0; display: grid; grid-template-columns: repeat(4, 1fr); grid-auto-rows: 48px; }
+.tile {
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; border-radius: var(--r-lg);
+  color: var(--fg); cursor: pointer; padding: 0;
+  transition: background .12s, color .12s;
+}
+.tile svg { color: var(--icon); }
+.tile:hover { background: var(--bg2); }
+.tile:hover svg { color: var(--fg2); }
+/* The reference's active tile is the accent on the glyph and nothing else -- no
+   fill, no underline. Its measured colour is #0058ec on the icon and the label. */
+.tile.on, .tile.on svg { color: var(--brand); }
+.tile.on { background: var(--brand-tint); }
+
+/* The right-hand column of the strip: two 48px buttons behind a 1px rule that is
+   inset 16px at both ends rather than running the full height. */
+/* 74px, and the 1px rule does NOT consume any of it: `position: absolute` means
+   the divider sits on the boundary rather than shrinking the tile grid, which is
+   how the reference gets a 368px grid (4 x 92) beside a 74px column inside a
+   450px strip. Taking that pixel out of the grid would make every tile 91.75. */
+.navright {
+  width: 74px; flex: none; position: relative;
+  display: flex; flex-direction: column;
+}
+.navright::before {
+  content: ''; position: absolute; left: 0; top: 16px; bottom: 16px;
+  width: 1px; background: var(--hair);
+}
+.navright .tile { flex: 1; border-radius: var(--r-lg); }
+
+/* ---------- the title bar ----------
+   48px, and the title is genuinely centred in the column rather than centred in
+   whatever space the two side controls leave, which is what makes it sit still
+   when one side control is absent. */
+.pane__header {
+  flex: none; height: 48px; position: relative;
+  display: flex; align-items: center;
+  padding: 0 24px 0 28px;
+  background: var(--panel); border-bottom: 1px solid var(--hair-soft);
+}
+.pane__title {
+  position: absolute; left: 50%; transform: translateX(-50%);
+  max-width: 60%; text-align: center;
+  font-size: var(--t-xl); font-weight: 500; letter-spacing: -.01em; color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pane__left { flex: 1; min-width: 0; display: flex; align-items: center; }
+.pane__right { flex: 1; min-width: 0; display: flex; align-items: center; justify-content: flex-end; gap: 6px; }
+/* 34px, the measured size of the reference's unit chip in that corner. */
+.unit-chip {
+  width: 34px; height: 34px; border-radius: var(--r-lg); flex: none;
+  background: var(--brand-tint); color: var(--brand);
+  display: flex; align-items: center; justify-content: center;
+  font-size: var(--t-sm); font-weight: 500;
+}
+
+/* ---------- the body ---------- */
+.pane__body {
+  flex: 1; min-height: 0; overflow-y: auto;
+  background: var(--bg); border-radius: 0 0 var(--r-lg) var(--r-lg);
+  padding: 8px 16px 16px;
+  display: flex; flex-direction: column; gap: var(--gutter);
+}
+/* The summary of the fleet, as one chip row pinned under the title bar rather
+   than a fifth card: it is a reading of the roster directly beneath it, and the
+   reference gives that job to a chip row too. */
+.pane__stats {
+  flex: none; display: flex; align-items: center; flex-wrap: wrap;
+  background: var(--panel); border-radius: var(--r-lg); box-shadow: var(--sh-card);
+  padding: 4px 8px;
+}
+/* count + word, all five the same shape, separated by the chip row's own 1px
+   rule. The old bar had a bare warning glyph standing in for a missing word
+   here while the other four read count+word. */
+.pane__stats .stat {
+  display: flex; align-items: center; gap: 5px;
+  padding: 0 8px; border-right: 1px solid rgba(92, 92, 92, .26);
+  font-size: var(--t-base); color: var(--fg2); white-space: nowrap;
+}
+.pane__stats .stat:last-of-type { border-right: 0; }
+.pane__stats .stat b { color: var(--fg); font-weight: 500; font-variant-numeric: tabular-nums; }
+.pane__stats .stat.s-ok b, .pane__stats .stat.s-moving b { color: var(--moving-ink); }
+.pane__stats .stat.s-idle b { color: var(--idle-ink); }
+.pane__stats .stat.s-offline b { color: var(--offline-ink); }
+.pane__stats .stat.s-alert b { color: var(--alert-ink); }
+.pane__stats .err { flex: 1 0 100%; padding: 2px 8px 4px; }
+
+/* ---------- an icon button ----------
+   40x40 at radius 12 and a 20px glyph: the reference's action tile, and the same
+   object in a unit card, in the title bar and on a secondary screen. */
+.ib {
+  width: 40px; height: 40px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 0; border-radius: var(--r-lg);
+  color: var(--fg); cursor: pointer; padding: 0;
+  transition: background .12s, color .12s;
+}
+.ib:hover { background: var(--bg2); }
+.ib svg { color: currentColor; }
+/* #0066b0, not the #0058ec accent: the reference marks an *engaged* action (a
+   followed unit, a locked zoom) in its primary, and reserves the accent for
+   navigation. Two blues, two meanings. */
+.ib.on { color: var(--brand-deep); }
+.ib:disabled { color: var(--never-ink); cursor: default; }
+.ib:disabled:hover { background: transparent; }
+
+/* ---------- a unit card ---------- */
+.unitcard {
+  width: 100%; text-align: left; font: inherit;
+  background: var(--panel); border: 0; border-radius: var(--r-lg);
+  box-shadow: var(--sh-card);
+  padding: 16px 16px 16px 12px;
+  display: flex; flex-direction: column;
+  cursor: pointer;
+  transition: box-shadow .12s;
+}
+.unitcard:hover { box-shadow: var(--sh-float); }
+/* Selection is a ring, not a fill: a tinted card would put colour behind words,
+   and the card's own state colour is already carried by its chip row. */
+.unitcard.on { box-shadow: 0 0 0 2px var(--brand), var(--sh-card); }
+
+.uc-head { display: flex; align-items: center; min-height: 40px; }
+/* The head is the one button on the card that opens the unit. The action tiles
+   are its siblings rather than its children, because a button inside a button is
+   invalid and browsers hoist the inner one out of the outer. */
+.uc-open {
+  flex: 1; min-width: 0; display: flex; align-items: center;
+  background: transparent; border: 0; padding: 0; margin: 0;
+  font: inherit; color: inherit; text-align: left; cursor: pointer;
+}
+.uc-open:hover .uc-name { color: var(--brand); }
+.uc-type { flex: none; padding-left: 4px; margin-right: 8px; color: var(--fg); display: flex; }
+.uc-main { flex: 1; min-width: 0; }
+.uc-name {
+  font-size: var(--t-base); font-weight: 500; color: var(--fg);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.uc-status {
+  display: flex; align-items: center; gap: 4px; margin-top: 2px;
+  font-size: var(--t-sm); color: var(--fg2); font-variant-numeric: tabular-nums;
+}
+
+/* The driver, when the account has enabled it, as a muted tail on the status
+   line rather than a column of its own: it is a person's name, and a name in a
+   92px column clips to "Gius...". */
+.uc-driver { color: var(--muted); margin-left: 6px; overflow: hidden; text-overflow: ellipsis; }
+.uc-driver::before { content: '· '; }
+
+/* Nine actions, no gutter, 48px tall -- the reference's row is 371x96 for two
+   rows of them. */
+.ictiles { display: flex; flex-wrap: wrap; margin-top: 2px; }
+.ictile { width: 40px; height: 48px; display: flex; align-items: center; justify-content: center; }
+
+/* The reference's own separator: 1px, rgba(25,25,28,.12), full card width. */
+.sep { height: 1px; border: 0; margin: 0; background: var(--line); flex: none; }
+
+.addrrow { display: flex; align-items: center; padding: 8px 0; gap: 0; }
+.addrrow__ic { flex: none; padding-right: 4px; color: var(--icon); display: flex; }
+.addrrow__main { flex: 1; min-width: 0; }
+.addrrow__line { color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.addrrow__age { margin-top: 2px; font-size: var(--t-sm); color: var(--muted); font-variant-numeric: tabular-nums; }
+
+/* ---------- a chip row ----------
+   The reference's status strip: a 1px rule above, then chips separated by 1px
+   rules, each an icon in its meaning's colour and the value in near-black. The
+   separator is a rule and not a pill outline -- these are readings, not tags. */
+.chiprow {
+  display: flex; align-items: center; flex-wrap: wrap;
+  padding: 4px 0; border-top: 1px solid rgba(92, 92, 92, .26);
+}
+.chip2 {
+  display: flex; align-items: center; gap: 4px;
+  padding: 0 8px; border-right: 1px solid rgba(92, 92, 92, .26);
+  font-size: var(--t-base); color: var(--fg); font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+/* Every chip keeps its 8px on both sides, including the first: the reference's
+   own chip row starts 8px in from the card's text edge, and it does that on
+   purpose -- the row reads as a strip rather than as a sentence that happens to
+   begin at the left margin. Measured, and reproduced rather than corrected. */
+.chip2:last-child { border-right: 0; }
+.chip2 svg { flex: none; }
+/* Meaning on the glyph only, which is the rule everywhere else in this sheet,
+   and in the ink values rather than the reference's brighter four: see the note
+   in the token block on why those four are not adopted. */
+.chip2.pos svg { color: var(--moving-ink); }
+.chip2.neg svg { color: var(--alert-ink); }
+.chip2.mut svg { color: var(--muted); }
+.chip2.mut { color: var(--fg2); }
+
+/* ---------- a section card ----------
+   52px, a 20px glyph in a 40px slot, a 16px title over a 12px subtitle, and a
+   chevron. The reference builds every secondary screen out of this one object --
+   statistics, maintenance, tools, sharing are all lists of them -- which is why
+   our own secondary screens can adopt it wholesale. */
+.sections { display: flex; flex-direction: column; gap: var(--gutter); }
+.section {
+  display: flex; align-items: center; width: 100%; min-height: 52px;
+  padding: 8px 16px; text-align: left; font: inherit;
+  background: var(--panel); border: 0; border-radius: var(--r-lg);
+  box-shadow: var(--sh-card); color: var(--fg); cursor: pointer;
+  transition: background .12s;
+}
+.section:hover { background: var(--bg2); }
+.section__ic { flex: none; padding-right: 16px; color: var(--fg); display: flex; }
+.section__main { flex: 1; min-width: 0; }
+.section__title { font-size: var(--t-lg); }
+.section__sub { font-size: var(--t-sm); color: var(--fg2); margin-top: 1px; }
+.section__end { flex: none; padding-left: 16px; color: var(--icon); display: flex; }
+/* A control parked in the section row's trailing slot. The `.phead select` and
+   `.rep-bar select` rules no longer reach one that moved here, and without this
+   the tachograph's status filter fell to 23px -- below the 28px floor this sheet
+   holds itself to. Same box as those two rules, stated once for this context. */
+.section__end select {
+  background: var(--panel); border: 1px solid var(--line); color: var(--fg);
+  border-radius: var(--r); padding: 7px 10px; font: inherit; font-size: var(--t-base);
+  cursor: pointer;
+}
+
+/* A section that is really a heading for the cards under it, not a door. */
+.section.static { cursor: default; }
+.section.static:hover { background: var(--panel); }
+
+/* ---------- the pane, on something narrow ----------
+   The column narrows before the geometry does: every value above was measured at
+   450px, so below that the cards are allowed to go fluid while the frame keeps
+   its proportions.
+
+   The tile grid stays 4 across at every width, and that is not a preference.
+   `.pane__nav` is the reference's 104px strip -- exactly two 48px rows plus its
+   4px padding -- and it does not clip. Dropping to 3 columns for the 8 tiles makes
+   a THIRD row that the strip has no height for, so it spills past the bottom edge
+   and is painted over by the pane's own title: measured at 320px, the Connect
+   tracker tile's centre point hits `H2.pane__title`, not the tile. Settings and
+   Connect tracker live in that row, which made two of the eight screens
+   unreachable on a narrow window. Found by the keyboard/reflow pass of
+   `npm run audit:ui` once a failed tile press stopped being a silent no-op. */
+@media (max-width: 1500px) { :root { --pane-w: 400px; } }
+@media (max-width: 1300px) { :root { --pane-w: 360px; } }
+@media (max-width: 860px) {
+  :root { --pane-w: 260px; }
+  .navright { width: 48px; }
+  .pane__title { font-size: var(--t-lg); }
+  .pane__header { padding: 0 12px 0 14px; }
+}
+

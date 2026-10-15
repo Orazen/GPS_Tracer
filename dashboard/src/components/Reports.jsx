@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { api, fmtDate, fmtTime } from '../api/traccar'
 import { PRESETS, rangeFor, rangeFromInputs } from '../lib/dates'
 import { computeArrivals } from '../lib/geofence'
+import { SectionGroup } from './Section'
 
 /**
  * Mileage, stops, trips and arrivals, plus a real Excel export.
@@ -157,6 +158,7 @@ export default function Reports({ devices, geofences, t, lang }) {
 
   return (
     <div className="pad reports">
+      <SectionGroup icon="filter" title={t('rptFilters')} sub={t('rptFiltersWhy')}>
       <div className="rep-bar">
         <div className="hist-presets">
           {PRESETS.map((p) => (
@@ -179,7 +181,9 @@ export default function Reports({ devices, geofences, t, lang }) {
             onChange={(e) => setToDate(e.target.value)} />
         </label>
 
-        <select value={scope} onChange={(e) => setScope(e.target.value)}>
+        {/* A filter sitting among other filters: no visible label, so it needs a
+            name a screen reader can announce. */}
+        <select aria-label={t('rptVehicle')} value={scope} onChange={(e) => setScope(e.target.value)}>
           <option value="all">{t('allTrucks')}</option>
           {devices.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
         </select>
@@ -193,7 +197,9 @@ export default function Reports({ devices, geofences, t, lang }) {
           {exporting ? t('exporting') : t('exportExcel')}
         </button>
       </div>
+      </SectionGroup>
 
+      <SectionGroup icon="speed" title={t('rptTotals')} sub={t('rptTotalsWhy')}>
       <div className="kpis">
         <div className="kpi"><b>{totalKm.toFixed(1)}</b><span>{t('totalKm')}</span></div>
         <div className="kpi"><b>{movingKm.toFixed(1)}</b><span>{t('movingKm')}</span></div>
@@ -201,7 +207,11 @@ export default function Reports({ devices, geofences, t, lang }) {
         <div className="kpi"><b>{data.stops.length}</b><span>{t('stops')}</span></div>
         <div className="kpi"><b>{data.arrivals.length}</b><span>{t('arrivals')}</span></div>
       </div>
+      </SectionGroup>
 
+      {/* The report itself. Its section row names whichever report is open, so
+          the group heading and the tab can never disagree. */}
+      <SectionGroup icon="reports" title={t(tab)}>
       <div className="subtabs">
         {TABS.map((x) => (
           <button key={x} className={tab === x ? 'on' : ''} onClick={() => setTab(x)}>
@@ -341,6 +351,7 @@ export default function Reports({ devices, geofences, t, lang }) {
           </tbody>
         </table>
       )}
+      </SectionGroup>
     </div>
   )
 }

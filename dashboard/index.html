@@ -7,9 +7,17 @@
          gets a 404, and the console fills with a spurious error on every load. -->
     <link
       rel="icon"
-      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b0f14'/%3E%3Cpath d='M16 6c-4.4 0-8 3.6-8 8 0 6 8 12 8 12s8-6 8-12c0-4.4-3.6-8-8-8z' fill='%2322d3a6'/%3E%3Ccircle cx='16' cy='14' r='3' fill='%230b0f14'/%3E%3C/svg%3E"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23ffffff'/%3E%3Cpath d='M16 6c-4.4 0-8 3.6-8 8 0 6 8 12 8 12s8-6 8-12c0-4.4-3.6-8-8-8z' fill='%230058ec'/%3E%3Ccircle cx='16' cy='14' r='3' fill='%23ffffff'/%3E%3C/svg%3E"
     />
-    <meta name="theme-color" content="#0b0f14" />
+    <meta name="theme-color" content="#f1f1f1" />
+    <!-- An authenticated operations console behind a fleet's own network, not a
+         public page: it must never be indexed, and the description is for the
+         browser and for anyone who bookmarks it rather than for a crawler. -->
+    <meta name="robots" content="noindex, nofollow" />
+    <meta
+      name="description"
+      content="Console di flotta: posizioni dal vivo, geofence, conformità tachigrafica e messa in servizio di un tracker, in sei tappe verificabili."
+    />
     <title>gpstracer</title>
   </head>
   <body>

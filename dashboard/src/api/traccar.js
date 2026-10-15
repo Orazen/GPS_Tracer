@@ -108,6 +108,33 @@ export const api = {
     return req(`/devices/${id}`, { method: 'PUT', body: patch })
   },
 
+  /**
+   * Register a tracker under an identifier the server has already refused.
+   *
+   * `uniqueId` must be EXACTLY the identifier in the `Unknown device` warning: it
+   * is what the unit puts in its login packet, and anything else leaves it refused
+   * for ever while looking correct in this list.
+   *
+   * `category` goes in as the TOP-LEVEL field. `attributes.deviceType` does not
+   * set it -- measured on Traccar 6.16, a device created with only the attributes
+   * form comes back with `category: null`, and Traccar derives speed and distance
+   * from the category, so those numbers are then quietly wrong. See
+   * docs/UNIMPLEMENTED.md §7.12. Both fields are sent: one is functional, the other
+   * is harmless metadata the fleet simulator also writes.
+   */
+  async provisionDevice({ name, uniqueId, category = 'truck', model = 'st-906l' }) {
+    return req('/devices', {
+      method: 'POST',
+      body: {
+        name,
+        uniqueId,
+        category,
+        disabled: false,
+        attributes: { model, deviceType: category },
+      },
+    })
+  },
+
   // ---- positions --------------------------------------------------------
   /**
    * Latest position per device. deviceIds is a comma list.

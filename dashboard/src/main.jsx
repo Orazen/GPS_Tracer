@@ -35,6 +35,12 @@ function Login({ onDone }) {
   const [err, setErr] = useState(null)
   const t = makeT(lang)
 
+  // The document's language is the app's language. index.html can only ship one of
+  // the two, and a screen reader takes its voice from this attribute: with
+  // `lang="it"` hardcoded, every English string is pronounced as Italian. Set in
+  // both roots, because the login screen is its own root state.
+  useEffect(() => { document.documentElement.lang = lang }, [lang])
+
   const submit = async (e) => {
     e.preventDefault()
     setBusy(true); setErr(null)

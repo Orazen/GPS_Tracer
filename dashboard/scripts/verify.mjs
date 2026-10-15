@@ -77,18 +77,43 @@ if (await page.locator('.login').count()) {
 await page.waitForSelector('.app', { timeout: 20000 })
 ok('logged in, dashboard shell up')
 
-const tabs = await page.locator('.tabs .tab').allTextContents()
+// The switcher's names live in aria-label, not in text: the tiles are icon-only,
+// the way the reference console draws them. Reading them back is therefore also a
+// test that an icon-only tile stayed announced.
+const tabs = await page.locator('.tiles .tile').evaluateAll(
+  (els) => els.map((el) => el.getAttribute('aria-label') || '')
+)
+// The strip's right-hand column is two more controls, and they are counted
+// separately on purpose: 8 + 2 is the reference's own layout (a 4x2 tile grid
+// beside a 74px column), and a total of 10 would pass whether the split held or
+// one control had drifted into the grid.
+const navCtl = await page.locator('.navright .tile').count()
 console.log('  tabs: ' + tabs.join(' | '))
-tabs.length === 6 ? ok('all 6 tabs present (fleet…settings + tachograph)') : fail(`expected 6 tabs, got ${tabs.length}`)
+console.log('  nav controls: ' + navCtl)
+navCtl === 2 ? ok('the strip\u2019s right column holds its 2 controls') : fail(`expected 2 nav controls, got ${navCtl}`)
+// Eight for an administrator: the seven fleet/tachograph destinations plus Connect
+// a tracker, which is administrator-only on purpose (it reports the server's own
+// configuration and the identifiers everything on the internet has sent it).
+// Eight is also what fills the reference's 4x2 tile grid exactly.
+tabs.length === 8 ? ok('all 8 tiles present (fleet…settings, plus alerts and connect a tracker)') : fail(`expected 8 tiles, got ${tabs.length}`)
+tabs.every((t) => t.trim()) ? ok('every tile carries its name for a screen reader') : fail('a tile has no accessible name')
 
 const go = async (label) => {
-  await page.locator('.tabs .tab', { hasText: label }).first().click()
+  await page.locator(`.tiles .tile[aria-label="${label}"]`).first().click()
   await page.waitForTimeout(1200)
+}
+/** Press a tile by any of several language-specific names. */
+const goAny = async (names) => {
+  for (const n of names) {
+    const tile = page.locator(`.tiles .tile[aria-label="${n}"]`)
+    if (await tile.count()) return go(n)
+  }
+  throw new Error(`no tile named ${names.join(' / ')}`)
 }
 
 // ---------------------------------------------------------------------------
 step('2. fleet map')
-await go(/Parco mezzi|Fleet/i)
+await goAny(['Fleet', 'Parco mezzi'])
 try {
   await page.waitForSelector('.mapwait', { state: 'detached', timeout: 20000 })
   ok('map ready')
@@ -100,9 +125,9 @@ const m = await page.evaluate(() => {
   const xs = els.map((e) => e.getBoundingClientRect().x)
   return {
     markers: els.length,
-    roster: document.querySelectorAll('.trow').length,
+    roster: document.querySelectorAll('.unitcard').length,
     spread: xs.length ? Math.round(Math.max(...xs) - Math.min(...xs)) : 0,
-    statusbar: document.querySelector('.statusbar')?.innerText.replace(/\n/g, ' '),
+    statusbar: document.querySelector('.pane__stats')?.innerText.replace(/\n/g, ' '),
     panel: document.querySelector('.panel h2')?.textContent,
     alerts: document.querySelectorAll('.alist li').length,
   }
@@ -115,7 +140,7 @@ await page.screenshot({ path: `${OUT}/01-fleet.png` })
 
 // ---------------------------------------------------------------------------
 step('3. trail history')
-await go(/Cronologia|History/i)
+await goAny(['History', 'Cronologia'])
 await page.waitForFunction(
   () => !/^—/.test(document.querySelector('.kpi b')?.textContent || '—'),
   null, { timeout: 30000 }
@@ -143,7 +168,7 @@ await page.screenshot({ path: `${OUT}/02-history.png` })
 
 // ---------------------------------------------------------------------------
 step('4. geofences')
-await go(/Siti|Sites|Zone/i)
+await goAny(['Zones & sites', 'Zone e clienti'])
 await page.waitForTimeout(2500)
 const geo = await page.evaluate(() => ({
   sites: document.querySelectorAll('.geo-list .rows li').length,
@@ -157,7 +182,7 @@ await page.screenshot({ path: `${OUT}/03-geofences.png` })
 
 // ---------------------------------------------------------------------------
 step('5. reports')
-await go(/Report/i)
+await goAny(['Reports', 'Report'])
 await page.waitForFunction(
   () => document.querySelectorAll('.grid tbody tr').length > 0
      || document.querySelector('.grid .muted'),
@@ -221,11 +246,11 @@ if (!download) {
 
 // ---------------------------------------------------------------------------
 step('7. tachograph screens')
-await go(/Cronotachigrafo|Tachograph/i)
+await goAny(['Tachograph', 'Cronotachigrafo'])
 
 const tachoShell = await page.evaluate(() => ({
-  heading: document.querySelector('.tacho-head h2')?.textContent,
-  versions: document.querySelector('.tacho-head .mono')?.textContent?.trim(),
+  heading: document.querySelector('.tacho .ws-head .ws-title')?.textContent,
+  versions: document.querySelector('.tacho .ws-head .mono')?.textContent?.trim(),
   notice: document.querySelector('.notice')?.innerText.replace(/\n/g, ' ').slice(0, 120),
   subtabs: [...document.querySelectorAll('.tacho .subtabs button')].map((b) => b.textContent),
 }))
@@ -233,7 +258,14 @@ console.log('  heading:  ' + tachoShell.heading)
 console.log('  versions: ' + tachoShell.versions)
 console.log('  notice:   ' + tachoShell.notice)
 console.log('  subtabs:  ' + tachoShell.subtabs.join(' | '))
-tachoShell.subtabs.length === 4 ? ok('four tachograph sections') : fail(`expected 4 sections, got ${tachoShell.subtabs.length}`)
+tachoShell.subtabs.length === 5
+  ? ok('five tachograph sections')
+  : fail(`expected 5 sections, got ${tachoShell.subtabs.length}`)
+// The registry is where a dispatcher says who drives what; it sits second,
+// immediately after bring-a-card-in, because both are the same kind of work.
+;/drivers|autisti/i.test(tachoShell.subtabs.join(' '))
+  ? ok('the driver registry has a section')
+  : fail('no driver registry section — who drives what cannot be recorded')
 // Leading semicolon: a line starting with / after a statement with no trailing
 // semicolon is parsed as division, not a regex literal.
 ;/not validated|non validato/i.test(tachoShell.notice || '')
@@ -267,6 +299,120 @@ console.log('  timeline: ' + JSON.stringify(tl))
 tl.acts > 0 ? ok(`activity timeline rendered (${tl.acts} changes, first: ${tl.first})`)
   : fail('activity timeline empty — the changes were not rendered')
 await page.screenshot({ path: `${OUT}/06-tacho-timeline.png` })
+
+// --- drivers: register, assign, mirror into the tracker, close
+// The whole point of this screen is that the assignment reaches BOTH systems: the
+// tachograph registry (dated, audited, never deleted) and the tracker's device
+// attribute, which is what the fleet roster and the alerts read. A round trip is
+// therefore the only useful test of it, and this one leaves no open assignment
+// behind, so running it twice changes nothing the next run can see.
+const VERIFY_DRIVER = 'Verify Driver'
+await page.locator('.tacho .subtabs button', { hasText: /Autisti|Drivers/i }).first().click()
+await page.waitForTimeout(1500)
+
+const regShell = await page.evaluate(() => ({
+  forbidden: !!document.querySelector('.sections .warn') && !document.querySelector('form.field'),
+  registry: !!document.querySelector('.sections table.grid select[aria-label="Assign to"], .sections table.grid select[aria-label="Assegna a"]'),
+  registerForm: !!document.querySelector('.sections form.field input'),
+  cardSelect: !!document.querySelector('.sections form.field select'),
+  legal: document.querySelectorAll('.warn.small').length,
+  switchOff: JSON.parse(localStorage.getItem('gt.cfg') || '{}').showDriverName !== true,
+  empty: /Nessun autista registrato|No drivers registered/i.test(document.body.innerText),
+}))
+regShell.registerForm ? ok('the registry offers a register form') : fail('no way to register a person')
+regShell.cardSelect ? ok('a card from the registry can be linked at registration') : fail('no card picker')
+// The switch being off must be stated on the screen, not inferred by the reader.
+regShell.switchOff && regShell.legal > 0
+  ? ok('the screen states that driver names are not displayed (Art. 4 L.300/1970)')
+  : regShell.switchOff ? fail('the driver-name switch is off but the screen does not say so') : ok('driver names are enabled for this account')
+await page.screenshot({ path: `${OUT}/10-tacho-drivers.png` })
+
+// Register the test driver once. A second run finds them and reuses them, which
+// is also the assertion that a duplicate employer reference is refused politely.
+if (!(await page.evaluate((n) => document.body.innerText.includes(n), VERIFY_DRIVER))) {
+  const form = page.locator('.sections form.field')
+  await form.locator('input').first().fill(VERIFY_DRIVER)
+  await form.locator('button.btn.primary').first().click()
+  await page.waitForTimeout(1500)
+}
+const registered = await page.evaluate(
+  (n) => document.body.innerText.includes(n) && !document.querySelector('.sections p.err'),
+  VERIFY_DRIVER
+)
+registered ? ok(`driver registered: ${VERIFY_DRIVER}`) : fail('the driver was not registered')
+
+// Scoped to the test driver's OWN row. Every assertion below is about what
+// happens to that assignment, and a locator that took the first row in the table
+// would have measured whichever driver happened to sort first.
+const verRow = page.locator('.sections table.grid tbody tr', { hasText: VERIFY_DRIVER }).first()
+
+// The assign button must not be pressable before a vehicle is chosen: an
+// assignment to nothing is not a state this screen should be able to produce.
+const assignBtn = verRow.locator('button.btn.tiny:not(.ghost)').first()
+const disabledFirst = await assignBtn.isDisabled()
+const rowSelect = verRow.locator('select')
+await rowSelect.selectOption({ index: 1 })
+await page.waitForTimeout(200)
+disabledFirst ? ok('assign is disabled until a vehicle is chosen') : fail('assign was pressable with no vehicle selected')
+await assignBtn.click()
+await page.waitForTimeout(2500)
+
+const assigned = await page.evaluate(async (n) => {
+  const message = document.querySelector('.sections p.ok, .sections p.err')?.textContent || ''
+  const rows = [...document.querySelectorAll('.sections table.grid tbody tr')]
+  const row = rows.find((r) => r.innerText.includes(n))
+  const devices = await fetch('/api/devices', { credentials: 'include' }).then((r) => r.json())
+  const mirrored = devices.filter((d) => d.attributes?.driverDriverId === n).map((d) => d.name)
+  return { message, vehicleCell: row ? row.children[3]?.innerText.trim() : null, mirrored }
+}, VERIFY_DRIVER)
+console.log('  assign: ' + assigned.message)
+console.log('  mirrored into: ' + (assigned.mirrored.join(', ') || 'nothing'))
+assigned.message.includes(VERIFY_DRIVER) ? ok('the assignment is confirmed on screen') : fail('no confirmation of the assignment')
+assigned.vehicleCell && assigned.vehicleCell !== '—'
+  ? ok(`the roster now names the vehicle: ${assigned.vehicleCell}`)
+  : fail('the registry does not show which vehicle the driver is in')
+assigned.mirrored.length > 0
+  ? ok(`the tracker console was updated: ${assigned.mirrored.join(', ')}`)
+  : fail('the assignment did not reach the tracker, so the fleet screen disagrees with the registry')
+
+// History: the open row must be there, and the closed ones must survive.
+// The driver's name is the button that opens their own history.
+await verRow.locator('button.btn.tiny.ghost').first().click()
+await page.waitForTimeout(1500)
+const assignmentHistory = await page.evaluate(() => {
+  const panels = [...document.querySelectorAll('.sections > *')]
+  const last = panels[panels.length - 1]
+  const rows = [...last.querySelectorAll('table.grid tbody tr')]
+  return { rows: rows.length, open: rows.filter((r) => /open|in corso/i.test(r.innerText)).length }
+})
+assignmentHistory.rows > 0
+  ? ok(`${assignmentHistory.rows} assignment row(s) of history`)
+  : fail('no assignment history')
+assignmentHistory.open === 1
+  ? ok('exactly one open assignment')
+  : fail(`expected 1 open assignment, got ${assignmentHistory.open}`)
+await page.screenshot({ path: `${OUT}/11-tacho-history.png` })
+
+// End it, and check the tracker mirror is updated as well as the registry row
+// closed. The label is translated: 'Termina' in Italian, 'End' in English.
+await verRow.locator('button.btn.tiny.ghost', { hasText: /Termina|Fine|End/i }).first().click()
+await page.waitForTimeout(2500)
+const closed = await page.evaluate(async (n) => {
+  const devices = await fetch('/api/devices', { credentials: 'include' }).then((r) => r.json())
+  const panels = [...document.querySelectorAll('.sections > *')]
+  const last = panels[panels.length - 1]
+  const rows = [...last.querySelectorAll('table.grid tbody tr')]
+  return {
+    stillMirrored: devices.filter((d) => d.attributes?.driverDriverId === n).length,
+    open: rows.filter((r) => /open|in corso/i.test(r.innerText)).length,
+    closedRows: rows.length,
+  }
+}, VERIFY_DRIVER)
+closed.open === 0 ? ok('the assignment is closed, not deleted') : fail('the assignment is still open after being ended')
+closed.closedRows > 0 ? ok('the closed assignment stays in the history') : fail('the history was emptied')
+closed.stillMirrored === 0
+  ? ok('the tracker console was cleared as well')
+  : fail(`the tracker still shows ${VERIFY_DRIVER} on a vehicle after the assignment ended`)
 
 // --- activity
 await page.locator('.tacho .subtabs button', { hasText: /Attività|Activity/i }).first().click()
@@ -329,14 +475,14 @@ console.log('  audit rows: ' + audit.rows)
 console.log('  first: ' + audit.actions[0])
 audit.forbidden ? fail('the audit log was refused for an administrator') : ok('audit log readable by owner')
 audit.rows > 0 ? ok(`${audit.rows} audit entries`) : fail('audit log is empty although reads and writes happened')
-;/import\.|calculation\.|driver_cards\.|report\./.test(JSON.stringify(audit.actions))
+;/import\.|calculation\.|driver_cards\.|report\.|registry\./.test(JSON.stringify(audit.actions))
   ? ok('audit entries name the action taken')
   : fail('audit entries do not identify the action')
 await page.screenshot({ path: `${OUT}/09-tacho-audit.png` })
 
 // ---------------------------------------------------------------------------
 step('8. settings + language switch')
-await go(/Impostazioni|Settings/i)
+await goAny(['Settings', 'Impostazioni'])
 const set = await page.evaluate(() => ({
   inputs: document.querySelectorAll('.settings input').length,
   driverSwitch: !!document.querySelector('.settings .field.check input'),
@@ -348,19 +494,20 @@ set.driverChecked === false
   ? ok('driver name is OFF by default, as designed (Art. 4 L.300/1970)')
   : fail('driver name is ON by default — legal risk')
 
-await page.locator('.topright .lang button', { hasText: 'EN' }).click()
+await page.locator('.pane__header .lang button', { hasText: 'EN' }).click()
 await page.waitForTimeout(900)
 const enCheck = await page.evaluate(() => ({
-  tabs: [...document.querySelectorAll('.tabs .tab')].map((b) => b.textContent),
-  status: document.querySelector('.statusbar')?.innerText.replace(/\n/g, ' '),
+  tabs: [...document.querySelectorAll('.tiles .tile')].map((b) => b.getAttribute('aria-label')),
+  status: document.querySelector('.pane__stats')?.innerText.replace(/\n/g, ' '),
+  lang: document.documentElement.lang,
 }))
 console.log('  EN: ' + JSON.stringify(enCheck))
 const allEn = enCheck.tabs.join(' ')
 // Expected copy, kept in step with the `en` dictionary in src/i18n/index.js.
 // Checking the Italian words are gone as well makes this a test of the language
 // switch rather than of six substrings happening to appear.
-const expectedEn = ['Fleet', 'History', 'Zones & sites', 'Reports', 'Tachograph', 'Settings']
-const expectedIt = ['Parco mezzi', 'Cronologia', 'Zone e clienti', 'Cronotachigrafo', 'Impostazioni']
+const expectedEn = ['Fleet', 'History', 'Zones & sites', 'Reports', 'Alerts', 'Tachograph', 'Settings', 'Connect tracker']
+const expectedIt = ['Parco mezzi', 'Cronologia', 'Zone e clienti', 'Avvisi', 'Cronotachigrafo', 'Impostazioni', 'Collega tracker']
 const atWord = (w) =>
   new RegExp('(^|\\W)' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(\\W|$)')
 const missing = expectedEn.filter((w) => !allEn.includes(w))
@@ -373,10 +520,211 @@ missing.length === 0 && leftover.length === 0
         (missing.length ? ' | missing: ' + missing.join(', ') : '') +
         (leftover.length ? ' | still Italian: ' + leftover.join(', ') : '')
     )
+// The document's language is the UI's language. index.html can only declare one
+// of the two, and a screen reader chooses its voice from this attribute: stuck on
+// "it", every English string on screen is read aloud in Italian.
+enCheck.lang === 'en'
+  ? ok('the document language follows the switch to English (en)')
+  : fail(`documentElement.lang is "${enCheck.lang}" while the UI is English`)
+
 await page.screenshot({ path: `${OUT}/10-english.png` })
 
 // ---------------------------------------------------------------------------
-step('9. console and network health')
+step('9. connect a tracker — the six hops, live')
+
+// Back to Italian: this step asserts copy, and step 8 left the app in English.
+await page.locator('.pane__header .lang button', { hasText: 'IT' }).click()
+await page.waitForTimeout(500)
+await goAny(['Connect tracker', 'Collega tracker'])
+
+await page.waitForSelector('.hops .hop', { timeout: 25000 })
+  .catch(() => fail('the hop list never rendered'))
+await page.waitForTimeout(1500)
+
+// The server's own view, read from the page, so the screen can be compared with
+// the API it claims to be reporting rather than with a literal in this file.
+const apiStatus = await page.evaluate(() =>
+  fetch('/connect/status', { credentials: 'include' }).then((r) => r.json()).catch(() => null)
+)
+console.log('  api: h02=' + JSON.stringify(apiStatus?.h02) +
+  ' registration=' + JSON.stringify(apiStatus?.registration))
+apiStatus ? ok('GET /connect/status answers the signed-in administrator') : fail('/connect/status failed')
+
+const onb = await page.evaluate(() => ({
+  diag: document.querySelector('.onb-diag')?.innerText.replace(/\n/g, ' ').trim(),
+  hops: [...document.querySelectorAll('.hops .hop')].map((h) => ({
+    n: h.querySelector('.hop-n')?.textContent?.trim(),
+    state: h.querySelector('.badge')?.textContent?.trim(),
+    name: h.querySelector('.hop-top strong')?.textContent?.trim(),
+  })),
+  reg: [...document.querySelectorAll('.onb-reg tbody tr')].map((r) =>
+    r.innerText.replace(/\s+/g, ' ').trim()),
+  refused: [...document.querySelectorAll('.onb-refused tbody tr')].map((r) =>
+    r.innerText.replace(/\s+/g, ' ').trim()),
+  registrationOpen: [...document.querySelectorAll('.notice')]
+    .some((n) => /APERTA|OPEN/i.test(n.innerText)),
+  smsBefore: !!document.querySelector('.onb-problems'),
+  problemText: document.querySelector('.onb-problems')?.innerText.replace(/\n/g, ' '),
+  portValue: document.querySelectorAll('.onb-sms-form input')[2]?.value,
+}))
+console.log('  diag:     ' + onb.diag)
+console.log('  hops:     ' + onb.hops.map((h) => `${h.n}:${h.name}=${h.state}`).join(' | '))
+console.log('  reg:      ' + onb.reg.join(' | '))
+console.log('  refused:  ' + (onb.refused.length ? onb.refused.join(' | ') : '(none)'))
+
+onb.hops.length === 6
+  ? ok('all six hops rendered, in the sheet\'s order')
+  : fail(`expected 6 hops, got ${onb.hops.length}`)
+onb.hops.map((h) => h.n).join(',') === '1,2,3,4,5,6'
+  ? ok('hops are numbered 1..6 as on the printed sheet')
+  : fail('hop numbering wrong: ' + onb.hops.map((h) => h.n).join(','))
+
+// The vocabulary is closed. A state outside the four means the screen invented a
+// claim it cannot support.
+const KNOWN = [/^ok$/i, /in attesa|waiting/i, /bloccata|blocked/i, /non visibile|not visible/i]
+const unknownStates = onb.hops.map((h) => h.state).filter((s) => !KNOWN.some((re) => re.test(s || '')))
+unknownStates.length === 0
+  ? ok('every hop states one of the four supported states')
+  : fail('unrecognised hop states: ' + unknownStates.join(', '))
+
+// The diagnosis names its state in a word as well as in a colour: the same chip a
+// hop row carries, and no coloured rule down the block's left edge. Colour alone
+// is not a signal, and this screen is read beside a printed sheet that has none.
+const diagBlock = await page.evaluate(() => {
+  const el = document.querySelector('.onb-diag')
+  return {
+    chip: el?.querySelector('.badge')?.textContent?.trim() || null,
+    sideBorder: el ? getComputedStyle(el).borderLeftWidth : 'missing',
+  }
+})
+KNOWN.some((re) => re.test(diagBlock.chip || ''))
+  ? ok(`the diagnosis states its state in a word (${diagBlock.chip})`)
+  : fail(`the diagnosis has no state word: ${diagBlock.chip}`)
+diagBlock.sideBorder === '0px'
+  ? ok('no coloured rule down the diagnosis, as nowhere else in the sheet')
+  : fail(`the diagnosis block carries a ${diagBlock.sideBorder} side border`)
+
+// Reachability, which no data assertion covers: a way past the nav, a focus ring
+// that ships, and a document language that follows the switch back.
+const a11y = await page.evaluate(() => {
+  const rules = [...document.styleSheets]
+    .flatMap((s) => { try { return [...s.cssRules] } catch { return [] } })
+    .map((r) => r.selectorText || '')
+  const link = document.querySelector('a.skip')
+  const href = link?.getAttribute('href') || null
+  const target = href && href.startsWith('#') ? document.querySelector(href) : null
+  return {
+    skip: href,
+    skipTarget: !!target,
+    // The shell is pointer-transparent on purpose so the map takes a drag that
+    // starts between two panels. A link inside it that does not opt back in is
+    // focusable and unclickable at the same time.
+    skipClickable: link ? getComputedStyle(link).pointerEvents !== 'none' : false,
+    mainFocusable: target?.getAttribute('tabindex') === '-1',
+    focusRing: rules.includes(':focus-visible'),
+    lang: document.documentElement.lang,
+  }
+})
+a11y.skipTarget && a11y.mainFocusable
+  ? ok(`the skip link "${a11y.skip}" resolves to a focusable target`)
+  : fail(`skip link "${a11y.skip}" does not resolve (target: ${a11y.skipTarget})`)
+a11y.skipClickable
+  ? ok('the skip link accepts a click (the shell is pointer-transparent)')
+  : fail('the skip link is unclickable: pointer-events:none inherited from .shell')
+a11y.focusRing
+  ? ok('a :focus-visible ring ships for keyboard users')
+  : fail('no :focus-visible ring in the sheet')
+
+// The vendored face, checked against the DEPLOYED image rather than the source
+// tree. This is the assertion that catches a Dockerfile that forgets `public/`:
+// the build stays green, every page still renders, and the only symptom is the
+// whole console quietly falling back to the platform UI face.
+const font = await page.evaluate(async () => {
+  await document.fonts.ready
+  const res = await fetch('/fonts/manrope-latin.woff2', { method: 'HEAD' }).catch(() => null)
+  return {
+    status: res ? res.status : 'no response',
+    rendered: document.fonts.check('14px Manrope'),
+    stack: getComputedStyle(document.body).fontFamily,
+  }
+})
+font.status === 200
+  ? ok('the vendored font file is served by the running container (HTTP 200)')
+  : fail(`/fonts/manrope-latin.woff2 answered ${font.status}: the image is missing public/`)
+font.rendered && /^Manrope/.test(font.stack)
+  ? ok(`body renders in the vendored face (${font.stack.split(',')[0]})`)
+  : fail(`body resolves "${font.stack}" and Manrope loaded=${font.rendered}`)
+a11y.lang === 'it'
+  ? ok('the document language followed the switch back to Italian (it)')
+  : fail(`documentElement.lang is "${a11y.lang}" while the UI is Italian`)
+
+// Hop 3 is the listener, and in this deployment it is up. Hop 4 is the identifier:
+// if the server has refused one, the screen must say BLOCKED and offer the fix
+// rather than reporting a generic failure.
+// Leading semicolon on the two statements that start with a regex literal: after
+// a line that does not end in a semicolon, `/` is parsed as division. Same trap as
+// the comment in step 10.
+;/^ok$/i.test(onb.hops[2]?.state || '')
+  ? ok('hop 3 (TCP 5013) reads ok — the h02 listener answers inside the network')
+  : fail(`hop 3 reads "${onb.hops[2]?.state}" with the listener up`)
+if (onb.refused.length > 0) {
+  ;/bloccata|blocked/i.test(onb.hops[3]?.state || '')
+    ? ok(`hop 4 reads blocked while ${onb.refused.length} identifier(s) are refused`)
+    : fail(`hop 4 reads "${onb.hops[3]?.state}" although the server refused an identifier`)
+} else {
+  ok('no refused identifier in the log, so hop 4 is not asserted as blocked')
+}
+
+// The screen must state the settings this server is RUNNING with, not the
+// documented defaults: they differ (registerUnknown is off by default and can be
+// on), and the difference is the answer to "why did my tracker not appear?".
+onb.reg.some((r) => new RegExp(apiStatus.registration.registerUnknown ? 'attiva|on' : 'disattivata|off', 'i').test(r))
+  ? ok('the registration state shown matches what the container rendered')
+  : fail('the registration table does not match /connect/status: ' + onb.reg.join(' | '))
+apiStatus.registration.allowRegistration === onb.registrationOpen
+  ? ok(`the "registration is open" warning follows the real setting (${apiStatus.registration.allowRegistration})`)
+  : fail('the registration-open warning disagrees with the server')
+
+// The port field is fed from the server's own mapping, not hardcoded to 5013.
+String(onb.portValue) === String(apiStatus.h02.hostPort)
+  ? ok(`the SMS port field defaults to this deployment's published port (${onb.portValue})`)
+  : fail(`SMS port field is ${onb.portValue}, server publishes ${apiStatus.h02.hostPort}`)
+
+// An empty APN and server must not silently render a sequence with blanks in it.
+onb.smsBefore ? ok('an incomplete form says what is missing instead of emitting commands') : fail('no validation on the SMS form')
+
+// Now fill it in, and check the commands against the ones docs/TRACKER-SETUP.md
+// documents and scripts/tests/test_connect_tracker.py asserts. Two implementations
+// of one sequence is a duplication; this is what stops them drifting.
+const smsInputs = page.locator('.onb-sms-form input')
+await smsInputs.nth(0).fill('internet')
+await smsInputs.nth(1).fill('203.0.113.10')
+await page.waitForTimeout(700)
+
+const sms = await page.evaluate(() => ({
+  commands: [...document.querySelectorAll('.sms li code')].map((c) => c.textContent.trim()),
+  problems: !!document.querySelector('.onb-problems'),
+}))
+console.log('  sms:      ' + sms.commands.join('  |  '))
+const expectedSms = [
+  ['apn', /^8030000 internet$/],
+  ['server', /^8040000 203\.0\.113\.10 \d+$/],
+  ['acc interval', /^8050000 20$/],
+  ['parked interval', /^8090000 300$/],
+  ['GPRS mode', /^7100000$/],
+  ['read-back', /^RCONF$/],
+]
+if (sms.problems) fail('the filled-in form still reports a problem')
+expectedSms.forEach(([label, re], i) => {
+  re.test(sms.commands[i] || '')
+    ? ok(`SMS ${i + 1} (${label}): ${sms.commands[i]}`)
+    : fail(`SMS ${i + 1} (${label}) is "${sms.commands[i]}", expected ${re}`)
+})
+
+await page.screenshot({ path: `${OUT}/11-connect-tracker.png`, fullPage: true })
+
+// ---------------------------------------------------------------------------
+step('10. console and network health')
 // The tacho tab issues a 403 for a viewer by design; this run is an administrator,
 // so any 4xx here is a real problem rather than the intended refusal.
 if (errors.length === 0 && bad.length === 0) ok('no console errors, no failed requests')

@@ -24,6 +24,10 @@ RUN npm ci --no-audit --no-fund
 
 COPY index.html vite.config.js server.mjs ./
 COPY src ./src
+# The vendored font files. Vite copies `public/` into `dist/` at build time, but
+# only if it is in the build context: without this line the image builds happily
+# and every page silently falls back to the platform UI face.
+COPY public ./public
 RUN npm run build
 
 

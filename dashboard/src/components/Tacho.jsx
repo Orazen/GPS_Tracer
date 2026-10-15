@@ -1,14 +1,39 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ago } from '../api/traccar'
+import { ago, api } from '../api/traccar'
 import { daysAgo, hhmm, isoDay, tacho } from '../api/tacho'
+import { SectionGroup } from './Section'
+
+/**
+ * A tachograph panel: the reference's section row heading the content, instead
+ * of a bare `h2` over the same box.
+ *
+ * The content surface keeps the `.panel` class rather than taking `.card`: the
+ * findings screen is read through `.panel .kpi b`, and the coverage and result
+ * panels are `.warnpanel` variants of it. Swapping in a second card class would
+ * mean updating those selectors for no visual gain.
+ */
+function Panel({ icon, title, sub, end, warn = false, children }) {
+  return (
+    <SectionGroup
+      icon={icon}
+      title={title}
+      sub={sub}
+      end={end}
+      card={`panel${warn ? ' warnpanel' : ''}`}
+    >
+      {children}
+    </SectionGroup>
+  )
+}
 
 /**
  * Tachograph screen.
  *
  * This sits in front of the tachograph service's API — imports, driver cards,
- * recorded activity, coverage and the EU driving-time engine. Four sub-tabs, in
- * the order an operator actually uses them: bring a card in, look at what it
- * says, ask the engine for findings, then check who read what.
+ * recorded activity, coverage and the EU driving-time engine. Five sub-tabs, in
+ * the order an operator actually uses them: bring a card in, say who drives
+ * what, look at what the cards say, ask the engine for findings, then check who
+ * read what.
  *
  * Three things are shown on purpose and are not decoration:
  *
@@ -24,7 +49,7 @@ import { daysAgo, hhmm, isoDay, tacho } from '../api/tacho'
  *      from non-owners would make "was this read?" unanswerable; showing the
  *      refusal is the honest version.
  */
-export default function Tacho({ t, lang }) {
+export default function Tacho({ t, lang, devices = [], showDriverName = false, onDevicesChanged }) {
   const [tab, setTab] = useState('imports')
   const [meta, setMeta] = useState(null)
   const [err, setErr] = useState(null)
@@ -47,8 +72,8 @@ export default function Tacho({ t, lang }) {
 
   return (
     <div className="pad tacho">
-      <div className="tacho-head">
-        <h2>{t('tacho')}</h2>
+      <div className="ws-head">
+        <h2 className="ws-title">{t('tacho')}</h2>
         {meta && (
           <span className="small muted mono">
             {meta.rules_version} · {meta.parser_version} · engine {meta.engine_version}
@@ -66,6 +91,10 @@ export default function Tacho({ t, lang }) {
       <nav className="subtabs">
         {[
           ['imports', t('tachoImports')],
+          // The registry comes second because it is the same kind of work as the
+          // first tab: establishing who and what this service is looking at,
+          // before any figure is read off it.
+          ['drivers', t('tachoDrivers')],
           ['activity', t('tachoActivity')],
           ['findings', t('tachoFindings')],
           ['audit', t('tachoAudit')],
@@ -77,6 +106,16 @@ export default function Tacho({ t, lang }) {
       </nav>
 
       {tab === 'imports' && <Imports t={t} lang={lang} />}
+      {tab === 'drivers' && (
+        <Drivers
+          t={t}
+          lang={lang}
+          cards={drivers}
+          devices={devices}
+          showDriverName={showDriverName}
+          onDevicesChanged={onDevicesChanged}
+        />
+      )}
       {tab === 'activity' && <Activity t={t} lang={lang} cards={drivers} />}
       {tab === 'findings' && <Findings t={t} lang={lang} cards={drivers} />}
       {tab === 'audit' && <Audit t={t} />}
@@ -154,14 +193,12 @@ function Imports({ t, lang }) {
   }
 
   return (
-    <div className="tacho-body">
-      <section className="panel">
-        <header className="phead">
-          <h2>{t('tachoUpload')}</h2>
-        </header>
+    <div className="sections tacho-body">
+      <Panel icon="connect" title={t('tachoUpload')} sub={t('tachoUploadWhy')}>
         <form className="field row" onSubmit={(e) => { e.preventDefault(); upload(e) }}>
-          <input type="file" name="file" accept=".ddd,.esm,application/octet-stream" required />
-          <select name="kind" defaultValue="unknown">
+          <input type="file" name="file" aria-label={t('tachoImportFile')}
+            accept=".ddd,.esm,application/octet-stream" required />
+          <select name="kind" aria-label={t('tachoDocKind')} defaultValue="unknown">
             <option value="unknown">{t('tachoKindUnknown')}</option>
             <option value="driver_card">{t('tachoKindCard')}</option>
             <option value="vehicle_unit">{t('tachoKindVu')}</option>
@@ -173,13 +210,14 @@ function Imports({ t, lang }) {
         <p className="small muted">{t('tachoUploadHint')}</p>
         {msg && <p className="small ok">{msg}</p>}
         {err && <p className="err">{err}</p>}
-      </section>
+      </Panel>
 
-      <section className="panel">
-        <header className="phead">
-          <h2>{t('tachoImports')}</h2>
+      <Panel
+        icon="tacho"
+        title={t('tachoImports')}
+        end={(
           <div className="row">
-            <select value={status} onChange={(e) => setStatus(e.target.value)}>
+            <select aria-label={t('tachoStatusFilter')} value={status} onChange={(e) => setStatus(e.target.value)}>
               <option value="">{t('tachoAllStatuses')}</option>
               {['pending', 'processing', 'done', 'rejected', 'failed'].map((s) => (
                 <option key={s} value={s}>
@@ -189,7 +227,8 @@ function Imports({ t, lang }) {
             </select>
             <span className="count">{rows.length}</span>
           </div>
-        </header>
+        )}
+      >
 
         {rows.length === 0 ? (
           <p className="muted small">{t('tachoNoImports')}</p>
@@ -247,18 +286,18 @@ function Imports({ t, lang }) {
               ))}
           </ul>
         )}
-      </section>
+      </Panel>
 
       {openId != null && (
-        <section className="panel">
-          <header className="phead">
-            <h2>
-              {t('tachoChanges')} · #{openId}
-            </h2>
+        <Panel
+          icon="history"
+          title={`${t('tachoChanges')} · #${openId}`}
+          end={(
             <button className="btn tiny ghost" onClick={() => { setOpenId(null); setChanges(null) }}>
               {t('tachoClose')}
             </button>
-          </header>
+          )}
+        >
           {changes === null ? (
             <p className="muted small">{t('loading')}</p>
           ) : changes.length === 0 ? (
@@ -283,7 +322,7 @@ function Imports({ t, lang }) {
               {t('tachoTruncated').replace('{n}', changes.length)}
             </p>
           )}
-        </section>
+        </Panel>
       )}
     </div>
   )
@@ -347,11 +386,8 @@ function Activity({ t, lang, cards }) {
   }, [days])
 
   return (
-    <div className="tacho-body">
-      <section className="panel">
-        <header className="phead">
-          <h2>{t('tachoPeriod')}</h2>
-        </header>
+    <div className="sections tacho-body">
+      <Panel icon="clock" title={t('tachoPeriod')} sub={t('tachoPeriodWhy')}>
         <div className="field row wrap">
           <label className="inline">
             {t('tachoDriver')}
@@ -382,17 +418,21 @@ function Activity({ t, lang, cards }) {
           )}
         </div>
         {err && <p className="err">{err}</p>}
-      </section>
+      </Panel>
 
       {coverage && (
-        <section className={`panel ${coverage.rest_findings_reliable ? '' : 'warnpanel'}`}>
-          <header className="phead">
-            <h2>{t('tachoCoverage')}</h2>
+        <Panel
+          icon="tacho"
+          title={t('tachoCoverage')}
+          sub={t('tachoCoverageWhy')}
+          warn={!coverage.rest_findings_reliable}
+          end={(
             <span className="count">
               {coverage.days_with_a_record}/{coverage.total_days} ·{' '}
               {Math.round((coverage.coverage_ratio || 0) * 100)}%
             </span>
-          </header>
+          )}
+        >
 
           <div className="kpis">
             <Kpi label={t('tachoDaysWith')} value={coverage.days_with_a_record} />
@@ -412,14 +452,10 @@ function Activity({ t, lang, cards }) {
           {!coverage.rest_findings_reliable && (
             <p className="small muted">{t('tachoRestWarning')}</p>
           )}
-        </section>
+        </Panel>
       )}
 
-      <section className="panel">
-        <header className="phead">
-          <h2>{t('tachoRecorded')}</h2>
-          <span className="count">{days.length}</span>
-        </header>
+      <Panel icon="reports" title={t('tachoRecorded')} end={<span className="count">{days.length}</span>}>
 
         <div className="kpis">
           <Kpi label={t('tachoDriving')} value={hhmm(totals.driving)} />
@@ -477,14 +513,14 @@ function Activity({ t, lang, cards }) {
               ))}
           </ul>
         )}
-      </section>
+      </Panel>
 
       {summary && Object.keys(summary.by_week).length > 0 && (
-        <section className="panel">
-          <header className="phead">
-            <h2>{t('tachoByWeek')}</h2>
-            <span className="count">{t('tachoWeekStartsMon')}</span>
-          </header>
+        <Panel
+          icon="tacho"
+          title={t('tachoByWeek')}
+          end={<span className="count">{t('tachoWeekStartsMon')}</span>}
+        >
           <table className="grid">
             <thead>
               <tr>
@@ -508,8 +544,365 @@ function Activity({ t, lang, cards }) {
             </tbody>
           </table>
           <p className="small muted">{summary.note}</p>
-        </section>
+        </Panel>
       )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Drivers: the registry, the assignment, and the history
+// ---------------------------------------------------------------------------
+
+/**
+ * Who is driving which truck.
+ *
+ * Two systems hold half of this each, and the screen refuses to pretend
+ * otherwise:
+ *
+ *   * the **tachograph registry** holds the person, their card link and the
+ *     assignment history. It is the record, it is dated, and it is never
+ *     deleted -- a closed assignment is what answers "who was in that truck last
+ *     month". Every call here is audited by the service with the forwarded
+ *     actor, and refused to a `viewer`.
+ *   * **Traccar** holds the truck and the attribute the fleet screen reads. An
+ *     assignment is mirrored into that attribute so the roster, the panel and
+ *     the alerts agree with the registry instead of showing nothing.
+ *
+ * The mirror is the only part that can fail on its own, and when it does the
+ * screen says so: "recorded, but the tracker console still shows the old value"
+ * is a different, and much less dangerous, statement than a green tick over a
+ * half-completed action.
+ *
+ * `vehicle_ref` is the tracker's **uniqueId**, not its name. A truck renamed in
+ * the console must not detach from its own history, and the identifier is the
+ * only stable handle on it; the name is resolved for display at render time.
+ */
+function Drivers({ t, lang, cards, devices, showDriverName, onDevicesChanged }) {
+  const [people, setPeople] = useState([])
+  const [state, setState] = useState('loading')
+  const [history, setHistory] = useState(null)
+  const [selected, setSelected] = useState(null)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState(null)
+  const [note, setNote] = useState(null)
+  const [form, setForm] = useState({ name: '', ref: '', card: '' })
+  const [target, setTarget] = useState({})
+
+  const load = useCallback(async () => {
+    try {
+      const d = await tacho.people()
+      setPeople(d.people || [])
+      setState('ok')
+    } catch (e) {
+      // 403 is not a failure: it is the service refusing a role, and the screen
+      // says which role rather than showing a stack trace.
+      setState(e.forbidden ? 'forbidden' : 'error')
+      if (!e.forbidden) setErr(String(e.message || e))
+    }
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  const trucks = useMemo(() => {
+    // Two trucks with the same uniqueId are impossible; two with the same name
+    // are not, which is the other reason the ref is the identifier here.
+    const seen = new Set()
+    return (devices || [])
+      .filter((d) => d.uniqueId && !seen.has(d.uniqueId) && seen.add(d.uniqueId))
+      .map((d) => ({ ref: d.uniqueId, name: d.name, id: d.id, driver: d.attributes?.driverDriverId || null }))
+  }, [devices])
+
+  const nameOf = (ref) => trucks.find((x) => x.ref === ref)?.name || ref
+
+  const openHistory = useCallback(async (driverId) => {
+    setSelected(driverId)
+    setHistory(null)
+    try {
+      const d = await tacho.vehicleAssignments({ driverId })
+      setHistory(d.vehicle_assignments || [])
+    } catch (e) {
+      setErr(String(e.message || e))
+    }
+  }, [])
+
+  const register = async (e) => {
+    e.preventDefault()
+    if (!form.name.trim()) return
+    setBusy(true)
+    setErr(null)
+    setNote(null)
+    try {
+      const person = await tacho.createPerson({
+        displayName: form.name,
+        externalRef: form.ref,
+        cardNumber: form.card || undefined,
+      })
+      setForm({ name: '', ref: '', card: '' })
+      await load()
+      setNote({ good: true, text: `${t('tachoPersonAdded')}: ${person.display_name}` })
+    } catch (e) {
+      setErr(String(e.message || e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /** Write the assignment to the registry, then mirror it into the tracker. */
+  const assign = async (person) => {
+    const ref = target[person.id]
+    if (!ref) return
+    setBusy(true)
+    setErr(null)
+    setNote(null)
+    try {
+      await tacho.assignVehicle({ driverId: person.id, vehicleRef: ref })
+      const truck = trucks.find((x) => x.ref === ref)
+      let mirror = null
+      if (!truck) {
+        mirror = t('tachoMirrorNoTruck')
+      } else {
+        try {
+          await api.setDriver(truck.id, person.display_name)
+        } catch (e) {
+          mirror = String(e.message || e)
+        }
+      }
+      await load()
+      if (selected === person.id) await openHistory(person.id)
+      if (!mirror) onDevicesChanged?.()
+      setNote(
+        mirror
+          ? { good: false, text: `${t('tachoMirrorFailed')} ${mirror}` }
+          : { good: true, text: `${t('tachoAssigned')}: ${person.display_name} → ${nameOf(ref)}` }
+      )
+    } catch (e) {
+      setErr(String(e.message || e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const close = async (row) => {
+    setBusy(true)
+    setErr(null)
+    setNote(null)
+    try {
+      await tacho.closeAssignment(row.id)
+      // Update the mirror too, but ONLY if the tracker still holds this driver's
+      // own name: it may have been changed to a co-driver since, and overwriting
+      // it blindly would delete somebody else's assignment from the console.
+      //
+      // The replacement is the next driver still open on that truck, not nothing.
+      // A truck can legitimately hold two (Art 8(5) multi-manning), so ending
+      // one driver's assignment must not blank the name of the other one who is
+      // still in it -- the mirror holds one value while the registry holds two.
+      const truck = trucks.find((x) => x.ref === row.vehicle_ref)
+      const name = people.find((p) => p.id === row.driver_id)?.display_name
+      let mirror = null
+      if (truck && name && truck.driver === name) {
+        const stillIn = people.find(
+          (p) => p.active && p.vehicle_ref === row.vehicle_ref && p.id !== row.driver_id
+        )
+        try {
+          await api.setDriver(truck.id, stillIn ? stillIn.display_name : null)
+        } catch (e) {
+          mirror = String(e.message || e)
+        }
+      }
+      await load()
+      if (selected === row.driver_id) await openHistory(row.driver_id)
+      if (!mirror) onDevicesChanged?.()
+      setNote(
+        mirror
+          ? { good: false, text: `${t('tachoMirrorFailed')} ${mirror}` }
+          : { good: true, text: t('tachoAssignmentClosed') }
+      )
+    } catch (e) {
+      setErr(String(e.message || e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const toggleActive = async (person) => {
+    setBusy(true)
+    setErr(null)
+    try {
+      await tacho.setPersonActive(person.id, !person.active)
+      await load()
+    } catch (e) {
+      setErr(String(e.message || e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (state === 'loading') return <p className="muted small pad-s">{t('loading')}</p>
+  if (state === 'forbidden') return <p className="warn">{t('tachoDriversForbidden')}</p>
+  if (state === 'error') return <p className="err">{t('serverError')}</p>
+
+  return (
+    <div className="sections tacho-body">
+      {!showDriverName && <p className="warn small">{t('tachoDriverSwitchOff')}</p>}
+      {err && <p className="err small">{err}</p>}
+      {note && <p className={note.good ? 'ok small' : 'err small'}>{note.text}</p>}
+
+      <Panel
+        icon="truck"
+        title={t('tachoRegistry')}
+        sub={t('tachoRegistryWhy')}
+        end={<span className="count">{people.length}</span>}
+      >
+        <form className="field row wrap" onSubmit={register}>
+          <label className="inline">
+            {t('tachoName')}
+            <input
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              maxLength={120}
+              required
+            />
+          </label>
+          <label className="inline">
+            {t('tachoExternalRef')}
+            <input
+              value={form.ref}
+              onChange={(e) => setForm({ ...form, ref: e.target.value })}
+              maxLength={120}
+            />
+          </label>
+          <label className="inline">
+            {t('tachoCard')}
+            <select value={form.card} onChange={(e) => setForm({ ...form, card: e.target.value })}>
+              <option value="">{t('tachoNoCardLink')}</option>
+              {cards.map((c) => (
+                <option key={c.card_number} value={c.card_number}>
+                  {c.holder_surname} {c.holder_first_names} · {c.card_number}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button className="btn primary" disabled={busy || !form.name.trim()}>
+            {t('tachoAddPerson')}
+          </button>
+        </form>
+
+        {people.length === 0 ? (
+          <p className="muted small">{t('tachoNoPeople')}</p>
+        ) : (
+          <table className="grid">
+            <thead>
+              <tr>
+                <th>{t('tachoName')}</th>
+                <th>{t('tachoExternalRef')}</th>
+                <th>{t('tachoCard')}</th>
+                <th>{t('tachoVehicle')}</th>
+                <th>{t('tachoAssignTo')}</th>
+                <th />
+              </tr>
+            </thead>
+            <tbody>
+              {people.map((p) => (
+                <tr key={p.id} className={selected === p.id ? 'on' : ''}>
+                  <td>
+                    <button className="btn tiny ghost" onClick={() => openHistory(p.id)}>
+                      {p.display_name}
+                    </button>
+                    {!p.active && <span className="muted small"> · {t('tachoInactive')}</span>}
+                  </td>
+                  <td className="small muted">{p.external_ref || '—'}</td>
+                  <td className="small muted mono">{p.card_number || t('tachoNoCardLink')}</td>
+                  <td className="small">
+                    {p.vehicle_ref ? nameOf(p.vehicle_ref) : <span className="muted">{t('noDriver')}</span>}
+                  </td>
+                  <td>
+                    <select
+                      aria-label={t('tachoAssignTo')}
+                      value={target[p.id] || ''}
+                      onChange={(e) => setTarget({ ...target, [p.id]: e.target.value })}
+                    >
+                      <option value="">{t('tachoPickVehicle')}</option>
+                      {trucks.map((v) => (
+                        <option key={v.ref} value={v.ref}>
+                          {v.name}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
+                  <td>
+                    <button
+                      className="btn tiny"
+                      disabled={busy || !target[p.id]}
+                      onClick={() => assign(p)}
+                    >
+                      {t('tachoAssign')}
+                    </button>
+                    {p.assignment_id && (
+                      <button
+                        className="btn tiny ghost"
+                        disabled={busy}
+                        onClick={() =>
+                          close({
+                            id: p.assignment_id,
+                            driver_id: p.id,
+                            vehicle_ref: p.vehicle_ref,
+                          })
+                        }
+                      >
+                        {t('tachoEndAssignment')}
+                      </button>
+                    )}
+                    <button className="btn tiny ghost" disabled={busy} onClick={() => toggleActive(p)}>
+                      {p.active ? t('tachoDeactivate') : t('tachoReactivate')}
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="small muted">{t('tachoRegistryFoot')}</p>
+      </Panel>
+
+      <Panel
+        icon="clock"
+        title={t('tachoHistory')}
+        sub={t('tachoHistoryWhy')}
+        end={selected ? <span className="count">{history?.length ?? 0}</span> : null}
+      >
+        {!selected && <p className="muted small">{t('tachoPickDriverForHistory')}</p>}
+        {selected && history === null && <p className="muted small">{t('loading')}</p>}
+        {selected && history && history.length === 0 && (
+          <p className="muted small">{t('tachoNoAssignments')}</p>
+        )}
+        {selected && history && history.length > 0 && (
+          <table className="grid">
+            <thead>
+              <tr>
+                <th>{t('tachoVehicle')}</th>
+                <th>{t('from')}</th>
+                <th>{t('to')}</th>
+                <th>{t('tachoNote')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {history.map((a) => (
+                <tr key={a.id}>
+                  <td>{nameOf(a.vehicle_ref)}</td>
+                  <td className="small">{a.assigned_from}</td>
+                  <td className="small">
+                    {a.assigned_to || <span className="ok">{t('tachoOpen')}</span>}
+                  </td>
+                  <td className="small muted">{a.note || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </Panel>
     </div>
   )
 }
@@ -561,11 +954,8 @@ function Findings({ t, lang, cards }) {
   const breaches = (result?.findings || []).filter((f) => f.severity === 'breach')
 
   return (
-    <div className="tacho-body">
-      <section className="panel">
-        <header className="phead">
-          <h2>{t('tachoRun')}</h2>
-        </header>
+    <div className="sections tacho-body">
+      <Panel icon="tacho" title={t('tachoRun')} sub={t('tachoRunWhy')}>
         <div className="field row wrap">
           <label className="inline">
             {t('tachoDriver')}
@@ -601,17 +991,20 @@ function Findings({ t, lang, cards }) {
         </div>
         <p className="small muted">{t('tachoDataAgeHint')}</p>
         {err && <p className="err">{err}</p>}
-      </section>
+      </Panel>
 
       {result && (
         <>
-          <section className={`panel ${breaches.length ? 'warnpanel' : ''}`}>
-            <header className="phead">
-              <h2>{t('tachoResult')}</h2>
+          <Panel
+            icon="tacho"
+            title={t('tachoResult')}
+            warn={breaches.length > 0}
+            end={(
               <span className="count">
                 {result.rules_version} · #{result.calculation_id}
               </span>
-            </header>
+            )}
+          >
 
             <div className="kpis">
               <Kpi label={t('status')} value={result.status} />
@@ -640,13 +1033,13 @@ function Findings({ t, lang, cards }) {
                 </>
               )}
             </p>
-          </section>
+          </Panel>
 
-          <section className="panel">
-            <header className="phead">
-              <h2>{t('tachoFindings')}</h2>
-              <span className="count">{result.findings.length}</span>
-            </header>
+          <Panel
+            icon="reports"
+            title={t('tachoFindings')}
+            end={<span className="count">{result.findings.length}</span>}
+          >
             {result.findings.length === 0 ? (
               <p className="muted small">{t('tachoNoFindings')}</p>
             ) : (
@@ -678,14 +1071,11 @@ function Findings({ t, lang, cards }) {
                 ))}
               </ul>
             )}
-          </section>
+          </Panel>
 
-          <section className="panel">
-            <header className="phead">
-              <h2>{t('tachoAssumptions')}</h2>
-            </header>
-            {/* Every assumption the engine made, verbatim. A figure you cannot
-                explain later is worse than no figure, so these are always visible. */}
+          {/* Every assumption the engine made, verbatim. A figure you cannot
+              explain later is worse than no figure, so these are always visible. */}
+          <Panel icon="tacho" title={t('tachoAssumptions')}>
             <ul className="rows compact">
               {result.assumptions.map((a, i) => (
                 <li key={i}>
@@ -693,15 +1083,15 @@ function Findings({ t, lang, cards }) {
                 </li>
               ))}
             </ul>
-          </section>
+          </Panel>
         </>
       )}
 
-      <section className="panel">
-        <header className="phead">
-          <h2>{t('tachoPastRuns')}</h2>
-          <span className="count">{history.length}</span>
-        </header>
+      <Panel
+        icon="history"
+        title={t('tachoPastRuns')}
+        end={<span className="count">{history.length}</span>}
+      >
         {history.length === 0 ? (
           <p className="muted small">{t('tachoNoRuns')}</p>
         ) : (
@@ -732,7 +1122,7 @@ function Findings({ t, lang, cards }) {
             </tbody>
           </table>
         )}
-      </section>
+      </Panel>
     </div>
   )
 }
@@ -765,11 +1155,12 @@ function Audit({ t }) {
   }, [])
 
   return (
-    <section className="panel">
-      <header className="phead">
-        <h2>{t('tachoAudit')}</h2>
-        {state === 'ok' && <span className="count">{entries.length}</span>}
-      </header>
+    <Panel
+      icon="settings"
+      title={t('tachoAudit')}
+      sub={t('tachoAuditWhy')}
+      end={state === 'ok' ? <span className="count">{entries.length}</span> : null}
+    >
 
       {state === 'loading' && <p className="muted small">{t('loading')}</p>}
       {state === 'forbidden' && <p className="warn">{t('tachoAuditOwnerOnly')}</p>}
@@ -809,7 +1200,7 @@ function Audit({ t }) {
             </tbody>
           </table>
         ))}
-    </section>
+    </Panel>
   )
 }
 

@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api/traccar'
+import { NEUTRAL, ZONE } from '../lib/palette'
+import { SectionGroup } from './Section'
 import FleetMap from './FleetMap'
 
 /**
@@ -17,7 +19,8 @@ import FleetMap from './FleetMap'
  * and read in this file is explicit about the order.
  */
 
-const PALETTE = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#a855f7', '#14b8a6']
+// Zone colours come from the shared palette so the picker and the map cannot
+// disagree. The previous list was the framework's default ramp, purple and all.
 const RADII = [100, 250, 500, 1000, 2000, 5000]
 
 const wktToLatLng = (wkt) => {
@@ -34,7 +37,7 @@ export default function GeofenceManager({ devices, geofences, onChanged, t, lang
   const [pending, setPending] = useState(null)      // { lat, lon }
   const [name, setName] = useState('')
   const [radius, setRadius] = useState(500)
-  const [color, setColor] = useState(PALETTE[0])
+  const [color, setColor] = useState(ZONE[0])
   const [hidden, setHidden] = useState(false)
   const [editing, setEditing] = useState(null)      // geofence id
   const [busy, setBusy] = useState(false)
@@ -87,7 +90,7 @@ export default function GeofenceManager({ devices, geofences, onChanged, t, lang
     setPending({ lat: p.lat, lon: p.lon })
     setName(g.name)
     setRadius(p.r)
-    setColor(g.attributes?.color || PALETTE[0])
+    setColor(g.attributes?.color || ZONE[0])
     setHidden(String(g.attributes?.hidden ?? 'false') === 'true')
     setErr(null)
   }
@@ -117,11 +120,13 @@ export default function GeofenceManager({ devices, geofences, onChanged, t, lang
   return (
     <div className="geo">
       <div className="geo-list">
-        <header className="phead">
-          <h2>{t('sites')}</h2>
-          <span className="count">{geofences.length}</span>
-        </header>
-
+        <div className="sections">
+        <SectionGroup
+          icon="zones"
+          title={t('sites')}
+          sub={t('sitesWhy')}
+          end={<span className="count">{geofences.length}</span>}
+        >
         <div className="geo-actions">
           <button className="btn primary" onClick={startPick} disabled={busy}>
             {picking ? t('clickMap') : t('addSite')}
@@ -152,7 +157,7 @@ export default function GeofenceManager({ devices, geofences, onChanged, t, lang
               ))}
             </div>
             <div className="geo-rad">
-              {PALETTE.map((c) => (
+              {ZONE.map((c) => (
                 <button
                   key={c}
                   className={`swatch ${color === c ? 'on' : ''}`}
@@ -176,6 +181,13 @@ export default function GeofenceManager({ devices, geofences, onChanged, t, lang
           </div>
         )}
 
+        </SectionGroup>
+
+        {/* The list of sites keeps the card language it already had: `.rows` is a
+            stack of white cards, and a white card inside a white card is the
+            nesting this restyle removed everywhere else, so this group carries
+            no surface of its own. */}
+        <SectionGroup icon="fleet" title={t('siteList')} card={null}>
         <ul className="rows">
           {geofences.map((g) => {
             const p = wktToLatLng(g.area || g.attributes?.area)
@@ -183,7 +195,7 @@ export default function GeofenceManager({ devices, geofences, onChanged, t, lang
             return (
               <li key={g.id} className={editing === g.id ? 'on' : ''}>
                 <div className="rowmain">
-                  <span className="gdot" style={{ background: g.attributes?.color || '#888' }} />
+                  <span className="gdot" style={{ background: g.attributes?.color || NEUTRAL }} />
                   <strong>{g.name}</strong>
                   {isHidden && <span className="tag muted">{t('hidden')}</span>}
                 </div>
@@ -198,6 +210,8 @@ export default function GeofenceManager({ devices, geofences, onChanged, t, lang
             )
           })}
         </ul>
+        </SectionGroup>
+        </div>
       </div>
 
       <div className="mapwrap geo-map">

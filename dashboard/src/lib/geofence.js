@@ -31,6 +31,8 @@
  * window, so `MAX_WINDOW_MS` caps how far back we will compute them.
  */
 
+import { NEUTRAL } from './palette'
+
 const R = 6371000 // metres
 
 /** Metres between two [lat, lon] pairs. */
@@ -61,7 +63,7 @@ export function siteOf(g) {
     lat: c.lat,
     lon: c.lon,
     r: c.r,
-    color: g.attributes?.color || '#888',
+    color: g.attributes?.color || NEUTRAL,
     hidden: String(g.attributes?.hidden ?? 'false') === 'true',
   }
 }

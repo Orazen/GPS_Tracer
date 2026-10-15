@@ -34,8 +34,9 @@
  */
 
 import { createServer } from 'node:http'
+import { connect } from 'node:net'
 import { readFile, stat } from 'node:fs/promises'
-import { createReadStream, existsSync, readFileSync } from 'node:fs'
+import { createReadStream, existsSync, readFileSync, openSync, readSync, fstatSync, closeSync } from 'node:fs'
 import { extname, join, normalize, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -93,6 +94,210 @@ const TACHO_TOKEN = process.env.TACHO_API_TOKEN || ''
 const DIST = join(HERE, 'dist')
 const MAX_BODY = Number(process.env.DASHBOARD_MAX_BODY_BYTES || 16 * 1024 * 1024)
 const UPSTREAM_TIMEOUT_MS = Number(process.env.DASHBOARD_UPSTREAM_TIMEOUT_MS || 60000)
+
+// ---------------------------------------------------------------------------
+// Onboarding
+//
+// Everything the "Connect a tracker" screen needs that is NOT reachable over
+// Traccar's REST API: what this server will do with an unknown identifier, which
+// identifiers it has already refused, and whether its H02 listener answers.
+//
+// All three are read from the Traccar container's log volume, mounted read-only
+// here. Nothing is inferred: when a file is missing the screen says the fact is
+// unreadable rather than assuming the default, because assuming the default is
+// how an operator spends an afternoon on the wrong hop.
+// ---------------------------------------------------------------------------
+
+/** The host port a tracker must be pointed at. Published side of the mapping. */
+const H02_PORT = Number(process.env.H02_PORT || 5013)
+
+/** Traccar's own listener port inside the container. Not configurable: h02. */
+const H02_CONTAINER_PORT = 5013
+
+const TRACCAR_LOG_DIR = process.env.TRACCAR_LOG_DIR || '/opt/traccar/logs'
+
+/** How much of the tail of tracker-server.log to consider. */
+const LOG_TAIL_BYTES = 512 * 1024
+
+/** At most this many refused identifiers are reported, newest first. */
+const MAX_SEEN = 12
+
+/**
+ * Read the last N bytes of a file without loading the whole thing.
+ *
+ * Traccar's log is append-only and grows for as long as the deployment lives, so
+ * `readFile` on it is a way to make the dashboard allocate a gigabyte one day.
+ * Returns null when the file is not there, which is a fact the screen reports.
+ */
+function readTail(path, bytes) {
+  let fd
+  try {
+    fd = openSync(path, 'r')
+  } catch {
+    return null
+  }
+  try {
+    const size = fstatSync(fd).size
+    const start = Math.max(0, size - bytes)
+    const length = size - start
+    if (length === 0) return ''
+    const buf = Buffer.allocUnsafe(length)
+    readSync(fd, buf, 0, length, start)
+    return buf.toString('utf8')
+  } catch {
+    return null
+  } finally {
+    try { closeSync(fd) } catch { /* nothing useful to do */ }
+  }
+}
+
+/**
+ * The onboarding settings the Traccar container actually rendered.
+ *
+ * Written by traccar/config/entrypoint.sh. Null when it could not be read, and
+ * the screen distinguishes "off" from "unknown" because those are different
+ * answers to "why did my tracker not appear?"
+ */
+function readOnboarding() {
+  const raw = readTail(join(TRACCAR_LOG_DIR, 'onboarding.json'), 64 * 1024)
+  if (raw === null) return null
+  try {
+    const parsed = JSON.parse(raw)
+    return {
+      readable: true,
+      writtenAt: typeof parsed.writtenAt === 'string' ? parsed.writtenAt : '',
+      allowRegistration: parsed.allowRegistration === true,
+      registerUnknown: parsed.registerUnknown === true,
+      defaultCategory: String(parsed.defaultCategory ?? ''),
+      regex: String(parsed.regex ?? ''),
+      h02ContainerPort: Number(parsed.h02ContainerPort) || H02_CONTAINER_PORT,
+    }
+  } catch {
+    // A half-written file is possible: the container rewrites it on start. Say so
+    // rather than reporting a default that may be the opposite of the truth.
+    return { readable: false, reason: 'unparsable' }
+  }
+}
+
+/**
+ * Identifiers Traccar has refused.
+ *
+ * This is the single most useful fact on the screen and it exists nowhere but
+ * the log: with auto-registration off (the default), a tracker that has never
+ * been registered reaches the server, is decoded, and is then thrown away with
+ * `WARN: Unknown device - <identifier> (<source ip>)` and no stored position.
+ * From the map that is indistinguishable from a tracker that never connected.
+ * Reading it back turns "nothing appears" into a one-click fix.
+ *
+ * Only the tail is scanned, and an identifier whose device now exists is dropped:
+ * the list is a to-do list, not an archive.
+ */
+function scanRefusedIdentifiers(knownIds) {
+  const raw = readTail(join(TRACCAR_LOG_DIR, 'tracker-server.log'), LOG_TAIL_BYTES)
+  if (raw === null) return { readable: false, entries: [] }
+
+  const re = /^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+WARN: Unknown device - (\S+?)(?: \(([^)]+)\))?\s*$/gm
+  // Newest last in the log, so iterate and keep overwriting: the last match for
+  // an identifier is the most recent sighting of it.
+  const byId = new Map()
+  let m
+  while ((m = re.exec(raw)) !== null) {
+    const [, at, identifier, source] = m
+    byId.set(identifier, { identifier, at, source: source || '' })
+  }
+
+  const entries = [...byId.values()]
+    .filter((e) => !knownIds.has(e.identifier))
+    .slice(-MAX_SEEN)
+    .reverse()
+
+  return { readable: true, entries }
+}
+
+/**
+ * Does Traccar's H02 listener answer?
+ *
+ * From inside the Docker network, at the container port. This proves the decoder
+ * is up and listening; it does NOT prove the published host port is mapped onto
+ * it, which is the failure in UNIMPLEMENTED.md 7.8 and which no process inside
+ * this container can see. The screen says exactly that instead of implying a green
+ * light means the outside path works -- scripts/connect-tracker.py --check is still
+ * the only thing that inspects both sides of the mapping.
+ */
+function probeH02(timeoutMs = 2500) {
+  const host = (() => {
+    try { return new URL(TRACCAR_URL).hostname } catch { return '127.0.0.1' }
+  })()
+  return new Promise((resolveProbe) => {
+    const socket = connect({ host, port: H02_CONTAINER_PORT })
+    let done = false
+    const finish = (reachable) => {
+      if (done) return
+      done = true
+      socket.destroy()
+      resolveProbe({ reachable, host, port: H02_CONTAINER_PORT })
+    }
+    socket.setTimeout(timeoutMs, () => finish(false))
+    socket.on('connect', () => finish(true))
+    socket.on('error', () => finish(false))
+  })
+}
+
+/** Traccar's device identifiers, so a refused one that is now registered drops off. */
+async function knownIdentifiers(req) {
+  try {
+    const res = await fetchWithTimeout(`${TRACCAR_URL}/api/devices`, {
+      headers: { cookie: req.headers.cookie || '', accept: 'application/json' },
+    })
+    if (!res.ok) return new Set()
+    const devices = await res.json()
+    return new Set((Array.isArray(devices) ? devices : []).map((d) => String(d.uniqueId ?? '')))
+  } catch {
+    return new Set()
+  }
+}
+
+/**
+ * GET /connect/status -- the server-side half of the onboarding screen.
+ *
+ * Administrator only.
+ *
+ * Not because the identifiers are secret -- an administrator can see the whole
+ * fleet anyway -- but because this reports the server's configuration and the
+ * raw identifiers of everything that has probed the public H02 port. That is
+ * operator material, and a read-only fleet user has no use for it. The refusal is
+ * a 403 with a reason, so a misconfigured role shows up as a clear message rather
+ * than an empty screen.
+ */
+async function serveConnectStatus(req, res) {
+  const user = await identify(req)
+  if (!user) return sendJson(res, 401, { detail: 'sign in first' })
+  if (user.administrator !== true) {
+    return sendJson(res, 403, {
+      detail:
+        'connecting trackers is an administrator task: this reads the server\'s ' +
+        'own configuration and the identifiers everything on the internet has sent it',
+    })
+  }
+
+  const [h02, known] = await Promise.all([probeH02(), knownIdentifiers(req)])
+  const refused = scanRefusedIdentifiers(known)
+
+  return sendJson(res, 200, {
+    h02: {
+      hostPort: H02_PORT,
+      containerPort: h02.port,
+      listenerReachable: h02.reachable,
+      probedHost: h02.host,
+    },
+    registration: readOnboarding(),
+    refused: {
+      readable: refused.readable,
+      logDir: TRACCAR_LOG_DIR,
+      entries: refused.entries,
+    },
+  })
+}
 
 if (!TACHO_TOKEN) {
   console.warn(
@@ -359,6 +564,7 @@ const server = createServer(async (req, res) => {
       // gets restarted for no reason.
       return sendJson(res, 200, { status: 'ok' })
     }
+    if (url.pathname === '/connect/status') return await serveConnectStatus(req, res)
     if (url.pathname.startsWith('/api/')) return await proxyTraccar(req, res, url)
     if (url.pathname === '/tacho' || url.pathname.startsWith('/tacho/')) {
       return await proxyTacho(req, res, url)
