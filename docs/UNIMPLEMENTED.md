@@ -113,6 +113,15 @@ Anything in this section is a **plan**, not a feature. Do not describe it as wor
 
 ---
 
+## 6b. Scrap/inventory service (new)
+
+| Feature | Status | Note |
+|---|---|---|
+| Scrap service backend (loads, QR, weigh, stock ledger, audit) | ✅ BUILT | `scrap/` FastAPI service, 23 tests passing, Docker image builds, compose integration. |
+| Scrap dashboard UI | ❌ NOT IMPLEMENTED | Pending. |
+| Sales/orders and delivery traceability | ❌ NOT IMPLEMENTED | Pending. |
+| Notifications for scrap events | ❌ NOT IMPLEMENTED | Pending. |
+
 ## 7. Known constraints and traps
 
 Recorded so they are not rediscovered expensively.

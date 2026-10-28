@@ -302,6 +302,41 @@ services:
       - internal
 
   # -------------------------------------------------------------------------
+  # Scrap-metal fleet and inventory service (loopback only).
+  #
+  # Owns loads, weigh tickets, stock movements and the audit trail. Like the
+  # tachograph service it keeps its tables in the scrap_ namespace of the same
+  # PostgreSQL instance. See scrap/README.md (forthcoming).
+  # -------------------------------------------------------------------------
+  scrap-api:
+    build:
+      context: ./scrap
+    image: gpstracer-scrap:local
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Europe/Rome}
+      SCRAP_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
+      SCRAP_API_TOKEN: ${SCRAP_API_TOKEN:?set SCRAP_API_TOKEN - see .env.example}
+      SCRAP_STORAGE_DIR: /var/lib/gpstracer/scrap
+      SCRAP_ALLOWED_ORIGINS: ${SCRAP_ALLOWED_ORIGINS:-http://127.0.0.1:8083}
+      SCRAP_LOG_LEVEL: ${TRACCAR_LOG_LEVEL:-info}
+    volumes:
+      - scrap-data:/var/lib/gpstracer/scrap
+    ports:
+      - "127.0.0.1:${SCRAP_API_PORT:-8085}:8085"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8085/healthz',timeout=5)\" || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    networks:
+      - internal
+
+  # -------------------------------------------------------------------------
   # Fleet simulator (optional, profile "tools").
   #
   # Seeds a demonstration fleet through the REAL H02 protocol on 5013, so
@@ -353,3 +388,5 @@ volumes:
   # NOTE: this volume and the tacho_ tables must be backed up together, or an
   # import will reference a file that is no longer there.
   tacho-data:
+  # Scrap service data (QR images etc.).
+  scrap-data:
