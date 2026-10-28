@@ -1255,3 +1255,34 @@ against the defect it exists for rather than against a proxy for it.
   alert-path test and by the mirror step, not by a screen-by-screen comparison.
 - **Not in CI**, for the same reason as above: this pass needs the running stack and
   Chromium, and it fails a local run rather than a pull request.
+
+## Navigation shell and placeholder pages (not yet browser-audited)
+
+The console now has eight top-level sections in one navigation shell: a sidebar on
+wide windows, and a top bar whose menu opens the same list as a drawer at 1100px and
+below. Every screen that existed before is still reachable under exactly one section.
+Overview is the landing page. Scrap Operations, Inventory and Sales & Deliveries are
+new and render an explicit "not yet available" state with no sample figures.
+
+What changed in the design, and what it is checked against:
+
+- The eight-tile switcher inside the pane was removed; its two controls (hide list,
+  frame fleet) stay in the pane header. The pane no longer has a footer: the account
+  and language switch moved to the sidebar.
+- Each page has a breadcrumb and an `h1`. Settings and the alerts screen no longer
+  repeat their name as a heading.
+- Shared loading, empty, error and not-yet-available states live in
+  `src/components/shell/States.jsx`.
+- Overview fleet counts are shown only after the first successful position read;
+  before that they read "unavailable", never zero.
+- Times are formatted for Europe/Rome in `src/lib/format.js`.
+- Light theme only. A dark theme was not offered: `check-design.mjs` measures the light
+  surface pair only, so a dark set would ship unchecked.
+
+Checked: `npm run build` exits 0; `node scripts/check-design.mjs` exits 0; a static
+render of the new navigation and Overview produces the expected markup. Not checked:
+`scripts/audit-ui.mjs` and `scripts/verify.mjs` need the running stack and were not run.
+They still select `.tiles .tile` (the old switcher, now gone) and, in `verify.mjs`,
+`.pane__header .lang button` (the language switch, now in the sidebar). Those selectors
+need moving to the sidebar (`.sidenav__item`, `.sidenav__sub-item`, `.sidenav .lang`)
+before either script's result means anything.

@@ -20,7 +20,7 @@ here has been tested.
 
 | Feature | Why it is blocked | What is needed to close it |
 |---|---|---|
-| **End-to-end GPS tracker verification on H02:5013** | No tracker has ever connected. The listener and decoder are exercised by `scripts/simulate-fleet.py`, and the published port now genuinely reaches h02 — it used to land on Traccar's *watch* listener instead (see §7.8), which was found by sending a real H02 packet from the host and reading the acknowledgement back. None of that involves a radio link, a SIM or GNSS. The **server side of onboarding is now tool-backed and verified** (§5), so when a unit does arrive the remaining unknown is the radio link, not the server. | One SinoTrack ST-906L (or equivalent), a SIM, and `docs/TESTING.md` |
+| **End-to-end GPS tracker verification on H02:5013** | No tracker has ever connected. The operator's hardware checklist is `docs/PHYSICAL-ACCEPTANCE.md` and is **NOT RUN**. The listener and decoder are exercised by `scripts/simulate-fleet.py`, and the published port now genuinely reaches h02 — it used to land on Traccar's *watch* listener instead (see §7.8), which was found by sending a real H02 packet from the host and reading the acknowledgement back. None of that involves a radio link, a SIM or GNSS. The **server side of onboarding is now tool-backed and verified** (§5), so when a unit does arrive the remaining unknown is the radio link, not the server. | One SinoTrack ST-906L (or equivalent), a SIM, and `docs/TESTING.md` |
 | **Tracker protocol confirmation** | The device's actual protocol is assumed from documentation, not observed. It may need GT06, or a different port entirely. | The device, and its traffic |
 | **Overspeed, power-disconnect (tamper) and SOS notifications** | Each depends on the specific device emitting the event. Traccar supports them; **the tracker is unverified**, and it is wrong to claim them first. | The device, then deliberately trigger each condition |
 | **Ignition/ACC detection** | A wired input. Cannot be simulated from documentation. | Installation and a wiring check |
@@ -233,3 +233,15 @@ Recorded so they are not rediscovered expensively.
     a backup restores, or touch anything about the physical tracker. It ends on the
     smoke test, which is the point where the stack is usable and the deployment is
     still not finished.
+15. **"Positioned" was one state, so a stale or invalid position passed.** The tracker
+    tool stopped on any stored position, so a 3-hour-old position, or one with the
+    GPS flag at `V`, counted as success. It also credited the wrong device when a
+    10-digit IMEI sat inside a 15-digit one, because it matched on a substring. It now
+    judges five checks separately (registered, connection received, valid fix `A`,
+    fresh within 15 min, plausible) and names the fault and next action for each. The
+    fix flag is read from the H02 packets in the log, or from the API's `valid` field
+    when the log only shows HEX. The same change fixed two defects in the tool's own
+    advice: `--adopt-seen-id` on its own exits 2 without adopting anything, so the
+    advice now prints `--imei … --name … --adopt-seen-id …`; and `--check` exited 0
+    when no container could be inspected, so it now exits 1. Measured offline only;
+    the physical checks are in `docs/PHYSICAL-ACCEPTANCE.md` and are not run.

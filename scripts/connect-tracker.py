@@ -35,14 +35,16 @@ Usage
     ./scripts/connect-tracker.py --check                        # is the listener right?
     ./scripts/connect-tracker.py --imei 4210209006 --name AB123CD --server vps.example.com
     ./scripts/connect-tracker.py --imei 4210209006 --watch-only  # already configured
-    ./scripts/connect-tracker.py --imei 4210209006 --adopt-seen-id 4210209006
+    ./scripts/connect-tracker.py --imei 4210209006 --name AB123CD --adopt-seen-id 4210209006
 
 Reads .env for ADMIN_EMAIL / ADMIN_PASSWORD / H02_PORT / TRACCAR_WEB_PORT, with
 real environment variables winning -- the same convention as scripts/backup.sh and
 scripts/simulate-fleet.py, so it also works under Dokploy where there is no .env.
 
-Exit codes:  0 the tracker is delivering positions
-             1 a precondition failed, or nothing connected in time
+Exit codes:  0 all five checks pass: registered, connection received, valid fix,
+                fresh position, plausible position
+             1 a precondition failed, a check failed, or the port mapping could not
+               be verified (--check)
              2 bad usage
 """
 
@@ -52,6 +54,7 @@ import argparse
 import datetime as dt
 import http.cookiejar
 import json
+import math
 import os
 import re
 import socket
@@ -79,6 +82,16 @@ SMS_OK_REPLY = "SET OK"
 # How often to ask Traccar whether the device has appeared. Traccar's own
 # sampling is every few seconds, so polling faster only adds load.
 POLL_SECONDS = 5
+
+# Freshness and plausibility limits for the five checks in assess(). A parked unit
+# reports every 300 s by default, so 15 minutes is three missed reports before
+# "fresh" fails -- tight enough to notice a dead unit, loose enough not to flap.
+FRESH_SECONDS = 15 * 60
+# A position older than this is not a late report; it means the date in the
+# packet is wrong.
+MAX_POSITION_AGE_SECONDS = 24 * 3600
+# Tolerance for the server and tracker clocks disagreeing a little.
+FUTURE_SKEW_SECONDS = 5 * 60
 
 # A first GPS fix from cold can genuinely take this long, especially indoors or
 # under a metal roof. Timing out earlier produces a false "it is broken".
@@ -329,7 +342,7 @@ def diagnose(log_text: str, imei: str, since: dt.datetime | None = None) -> dict
     # packets may be a different vehicle entirely, and "the server is receiving
     # traffic it understands" is then a confidently wrong diagnosis that sends the
     # technician looking at the antenna while another tracker is working fine.
-    our_lines = [line for line in window if imei and imei in line]
+    our_lines = [line for line in window if mentions_identifier(line, imei)]
     if our_lines:
         kind = "reached_server"
     elif seen:
@@ -346,6 +359,256 @@ def diagnose(log_text: str, imei: str, since: dt.datetime | None = None) -> dict
         # online flag. Worth naming separately so it is not read as success.
         "heartbeat_only": bool(our_lines) and all("HTBT" in line for line in our_lines),
     }
+
+
+def mentions_identifier(line: str, identifier: str) -> bool:
+    """True when `identifier` appears as a whole number in `line`.
+
+    A plain substring test lets a 10-digit IMEI match inside a 15-digit one, so a
+    packet from a neighbouring vehicle would be credited to this device.
+    """
+    if not identifier:
+        return False
+    return re.search(rf"(?<!\d){re.escape(identifier)}(?!\d)", line) is not None
+
+
+def fix_flags(log_text: str, imei: str, since: dt.datetime | None = None) -> dict:
+    """Count the GPS fix flags on this unit's H02 position packets in the log.
+
+    An H02 position packet is `*HQ,<imei>,V1,<time>,<A|V>,...#`. `A` is a valid
+    fix and `V` is no fix. Only packets naming this IMEI count, and only those in
+    the window. Logs that record traffic as HEX show neither, so both counts stay
+    zero and the caller must not read that as "no fix".
+    """
+    counts = {"A": 0, "V": 0}
+    if not imei:
+        return counts
+    pattern = re.compile(rf"\*HQ,{re.escape(imei)},V1,\d{{6}},([AV]),")
+    for line in lines_since(log_text, since):
+        match = pattern.search(line)
+        if match:
+            counts[match.group(1)] += 1
+    return counts
+
+
+def parse_time(value) -> dt.datetime | None:
+    """A Traccar ISO-8601 timestamp as an aware UTC datetime, or None."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        when = dt.datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=dt.timezone.utc)
+    return when.astimezone(dt.timezone.utc)
+
+
+CHECKS = (
+    ("registered", "a. registered in Traccar"),
+    ("received", "b. H02 connection received"),
+    ("fix", "c. valid GPS fix (flag A)"),
+    ("fresh", "d. fresh position in the API"),
+    ("plausible", "e. position plausible"),
+)
+
+
+def _check(key: str, state: str, detail: str = "", fault: str = "", action: str = "") -> dict:
+    return {
+        "key": key,
+        "label": dict(CHECKS)[key],
+        "state": state,
+        "detail": detail,
+        "fault": fault,
+        "action": action,
+    }
+
+
+def _skip(key: str, why: str) -> dict:
+    return _check(key, "skip", detail=f"not evaluated: {why}")
+
+
+def _is_coordinate(value, limit: float) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(value)
+        and -limit <= value <= limit
+    )
+
+
+def _plausible(position: dict, when: dt.datetime | None, now: dt.datetime) -> dict:
+    lat, lon = position.get("latitude"), position.get("longitude")
+    if not (_is_coordinate(lat, 90) and _is_coordinate(lon, 180)):
+        return _check(
+            "plausible", "fail",
+            fault="the coordinates are missing or outside the valid range",
+            action="the packet was misread or is not H02 position data: copy the *HQ line "
+                   "from the log and compare it with docs/ST-906L.md",
+        )
+    if lat == 0 and lon == 0:
+        return _check(
+            "plausible", "fail",
+            fault="the position is 0,0, which is an unset GPS and not a real place",
+            action="treat it as no fix: check the antenna and wait for flag A",
+        )
+    if when is None:
+        return _check(
+            "plausible", "fail",
+            fault="the position has no readable timestamp",
+            action="read fixTime for this position in GET /api/positions",
+        )
+    ahead = (when - now).total_seconds()
+    if ahead > FUTURE_SKEW_SECONDS:
+        return _check(
+            "plausible", "fail",
+            fault=f"the position is {ahead / 60:.0f} min in the future, so a clock is wrong",
+            action="check the server clock and timezone on the host, and the tracker's GPS date and time",
+        )
+    age = (now - when).total_seconds()
+    if age > MAX_POSITION_AGE_SECONDS:
+        return _check(
+            "plausible", "fail",
+            fault=f"the position time is {age / 3600:.0f} h old, so the date in the packet is wrong",
+            action="check the tracker's date, which comes from GPS time; an old date usually "
+                   "means no GPS time was received",
+        )
+    return _check("plausible", "ok", detail="coordinates in range, timestamp current")
+
+
+def assess(device, positions, *, evidence, now: dt.datetime, started: dt.datetime,
+           api_error: str = "") -> list[dict]:
+    """Five separate verdicts, in order, each with its own fault and next action.
+
+    The three-state `stage()` answers "is there a device, a connection, a
+    position". That is too coarse to act on: "connected" hides whether the GPS has
+    a fix, and "positioned" hides a stale or impossible position. These checks
+    keep each failure apart so the operator is told which thing to fix:
+
+      a  registered   the device record exists.
+      b  received     packets from this IMEI reached the server (log or lastUpdate).
+      c  fix          a valid fix (`A`) is on the packets, or the API says valid.
+      d  fresh        the newest stored position is within FRESH_SECONDS.
+      e  plausible    coordinates in range, not 0,0, not in the future, not wildly old.
+
+    A check whose input is missing is `skip`, not `ok`. Only all five `ok` means
+    the tracker is delivering usable positions.
+    """
+    evidence = evidence or {}
+    positions = positions or []
+
+    if api_error:
+        first = _check(
+            "registered", "fail",
+            fault=f"the Traccar API did not answer ({api_error})",
+            action="check the stack is up (docker compose ps) and TRACCAR_WEB_PORT is right",
+        )
+        return [first] + [_skip(key, "the API did not answer") for key, _ in CHECKS[1:]]
+
+    if device:
+        first = _check("registered", "ok", detail=f"device #{device.get('id')} exists")
+    else:
+        first = _check(
+            "registered", "fail",
+            fault="no Traccar device has this uniqueId",
+            action="run without --watch-only to create it, or check --imei against the label on the unit",
+        )
+
+    lastupdate = parse_time((device or {}).get("lastUpdate"))
+    heard_since_start = lastupdate is not None and lastupdate >= started
+    if evidence.get("our_lines") or heard_since_start:
+        if evidence.get("heartbeat_only"):
+            received = _check("received", "ok", detail="connected, but heartbeats only so far")
+        elif evidence.get("our_lines"):
+            received = _check("received", "ok", detail="packets from this IMEI reached the server (log)")
+        else:
+            received = _check("received", "ok",
+                              detail="Traccar recorded a packet from this device since the run started")
+    elif evidence.get("kind") == "unknown_device":
+        seen = ", ".join(evidence.get("seen_identifiers") or [])
+        received = _check(
+            "received", "fail",
+            fault=f"packets arrived under identifier {seen}, which is not this device's uniqueId",
+            action=f"if {seen} is this tracker's IMEI, re-run with --adopt-seen-id {seen}; "
+                   "if it belongs to another vehicle, do NOT adopt it",
+        )
+    elif not evidence.get("log_readable", True):
+        received = _check(
+            "received", "fail",
+            fault="the server log could not be read, so whether packets arrived is unknown",
+            action="run docker compose logs traccar and read the H02 lines directly",
+        )
+    else:
+        received = _check(
+            "received", "fail",
+            fault="no packet from any device reached the server since this run started",
+            action="device side: SIM data and APN, the server address and port (RCONF), "
+                   "and the public firewall and port mapping",
+        )
+
+    if received["state"] != "ok":
+        fix = _skip("fix", "no connection yet")
+    else:
+        flags = evidence.get("fix_flags") or {}
+        api_valid = any(p.get("valid") is True for p in positions)
+        api_invalid = any(p.get("valid") is False for p in positions)
+        if api_valid or flags.get("A"):
+            fix = _check("fix", "ok", detail="valid fix (flag A) seen")
+        elif flags.get("V") or api_invalid:
+            fix = _check(
+                "fix", "fail",
+                fault="the tracker is reporting, but its GPS has no fix (flag V)",
+                action="put the unit outdoors or by a window with the antenna in clear sky; "
+                       "a cold first fix can take 15 minutes; check the antenna is connected",
+            )
+        elif evidence.get("heartbeat_only"):
+            fix = _check(
+                "fix", "fail",
+                fault="only heartbeats (HTBT) have arrived; no position packet yet",
+                action="wait a few minutes; if it persists, check the reporting interval with "
+                       "RCONF and that the unit sends *HQ position packets",
+            )
+        else:
+            fix = _check(
+                "fix", "fail",
+                fault="no position packet with a fix flag has been seen",
+                action="read the server log for this IMEI (docs/PHYSICAL-ACCEPTANCE.md); if it "
+                       "shows only HEX, the flag cannot be read there, so rely on check d",
+            )
+
+    epoch = dt.datetime.min.replace(tzinfo=dt.timezone.utc)
+    newest = max(positions, key=lambda p: parse_time(p.get("fixTime")) or epoch, default=None)
+    newest_when = parse_time(newest.get("fixTime")) if newest else None
+
+    if newest is None:
+        fresh = _check(
+            "fresh", "fail",
+            fault="no position stored since this run started",
+            action="see the first failing check above; this is where the position should appear",
+        )
+        plausible = _skip("plausible", "no position to check")
+    else:
+        if newest_when is None:
+            fresh = _check(
+                "fresh", "fail",
+                fault="the newest position has no readable timestamp",
+                action="read fixTime for this position in GET /api/positions",
+            )
+        else:
+            age = (now - newest_when).total_seconds()
+            if age <= FRESH_SECONDS:
+                fresh = _check("fresh", "ok", detail=f"newest position {max(age, 0):.0f}s old")
+            else:
+                fresh = _check(
+                    "fresh", "fail",
+                    fault=f"the newest stored position is {age / 60:.0f} min old "
+                          f"(limit {FRESH_SECONDS // 60} min), so the tracker has stopped reporting",
+                    action="check ignition/ACC, the power supply and the parked interval (809); "
+                           "with ignition off a working unit still reports every 5 minutes",
+                )
+        plausible = _plausible(newest, newest_when, now)
+
+    return [first, received, fix, fresh, plausible]
 
 
 _ENTRY = re.compile(r"<entry key='([^']+)'>([^<]*)</entry>")
@@ -403,7 +666,7 @@ def unknown_device_advice(seen: str, imei: str, settings: dict | None) -> list[s
     lines = [
         f"Received a packet, but the identifier the server read is not a device: {seen}",
         f"  That identifier is what Traccar matches on. Register it instead of {imei}:",
-        f"    ./scripts/connect-tracker.py --adopt-seen-id {first}",
+        f"    ./scripts/connect-tracker.py --imei {imei} --name <PLATE> --adopt-seen-id {first}",
     ]
     pattern = (settings or {}).get("regex") or ""
     auto = (settings or {}).get("register_unknown")
@@ -433,11 +696,15 @@ def advice(result: dict, imei: str, server: str, port: int, sms_reply: str = "",
     """Turn a diagnosis into the next action, specific to this failure."""
     kind = result.get("kind")
     lines = []
-    if kind == "unknown_device":
+    if kind == "unreadable":
+        lines.append("The Traccar log could not be read, so this run cannot say whether packets arrived.")
+        lines.append("  * Run `docker compose logs traccar` and look for H02 lines from this IMEI.")
+        lines.append("  * Do not conclude from silence here: an unreadable log is not an empty one.")
+    elif kind == "unknown_device":
         seen = ", ".join(result.get("seen_identifiers") or [])
         lines.extend(unknown_device_advice(seen, imei, server_settings))
     elif kind == "reached_server":
-        lines.append("The server is receiving traffic it understands, but no position is stored.")
+        lines.append("The server is receiving traffic it understands, but the position checks have not passed.")
         lines.append("  * Send RCONF and read the reply. If the APN or the IP/port is wrong in it,")
         lines.append("    the settings never took -- and a silent SMS looks exactly like this.")
         lines.append("  * Take the tracker outdoors, antenna up. A cold first fix can take 15 minutes.")
@@ -785,8 +1052,13 @@ def ensure_device(api: Api, imei: str, name: str, *, model: str, category: str) 
     return {"device": created, "created": True}
 
 
-def watch(api: Api, device_id: int, *, timeout: int, started: dt.datetime, log, poll: int = POLL_SECONDS) -> dict:
-    """Poll until the tracker is delivering positions, or give up.
+def watch(api: Api, device_id: int, *, timeout: int, started: dt.datetime, log,
+          poll: int = POLL_SECONDS, evidence=None) -> dict:
+    """Poll until all five checks pass, or give up.
+
+    `started` is an aware UTC datetime. `evidence` is a callable returning the log
+    diagnosis (see diagnose and fix_flags); without it checks b and c cannot pass
+    from the log, only from the API.
 
     Reports a line each time the state changes, not on every poll: a wall of
     identical "waiting..." lines hides the one line that matters.
@@ -794,24 +1066,38 @@ def watch(api: Api, device_id: int, *, timeout: int, started: dt.datetime, log, 
     deadline = time.monotonic() + timeout
     last = None
     while True:
+        now = dt.datetime.now(dt.timezone.utc)
         device = api.call(f"/devices/{device_id}")
+        api_error = ""
         if isinstance(device, dict) and "_error" in device:
+            api_error = str(device["_error"])
             device = None
         positions = api.call(
             f"/positions?deviceId={device_id}"
             f"&from={started.strftime('%Y-%m-%dT%H:%M:%SZ')}"
-            f"&to={(dt.datetime.utcnow() + dt.timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ')}"
+            f"&to={(now + dt.timedelta(days=1)).strftime('%Y-%m-%dT%H:%M:%SZ')}"
         )
         if isinstance(positions, dict):
+            if "_error" in positions:
+                api_error = api_error or str(positions["_error"])
             positions = []
-        current = stage(device, positions)
+        info = evidence() if evidence else {}
+        checks = assess(device, positions, evidence=info, now=now, started=started, api_error=api_error)
+        done = all(check["state"] == "ok" for check in checks)
+        current = "api_error" if api_error else stage(device, positions)
         if current != last:
             log(current)
             last = current
-        if current == "positioned":
-            return {"stage": current, "device": device, "positions": len(positions)}
-        if time.monotonic() >= deadline:
-            return {"stage": current, "device": device, "positions": len(positions or [])}
+        if done or time.monotonic() >= deadline:
+            return {
+                "stage": current,
+                "done": done,
+                "device": device,
+                "positions": len(positions),
+                "checks": checks,
+                "evidence": info,
+                "api_error": api_error,
+            }
         time.sleep(poll)
 
 
@@ -819,7 +1105,8 @@ def watch_line(stage_name: str, elapsed: float) -> str:
     return {
         "registered": f"  [{elapsed:5.0f}s] registered — waiting for the tracker's first packet",
         "connected": f"  [{elapsed:5.0f}s] connected — the server has heard from it, waiting for a fix",
-        "positioned": f"  [{elapsed:5.0f}s] positioned — real coordinates received",
+        "positioned": f"  [{elapsed:5.0f}s] positioned — stored, now checking freshness and plausibility",
+        "api_error": f"  [{elapsed:5.0f}s] the Traccar API is not answering — retrying",
     }.get(stage_name, f"  [{elapsed:5.0f}s] {stage_name}")
 
 
@@ -837,7 +1124,7 @@ def build_parser() -> argparse.ArgumentParser:
             "  ./scripts/connect-tracker.py --check\n"
             "  ./scripts/connect-tracker.py --imei 4210209006 --name AB123CD --server vps.example.com --apn internet\n"
             "  ./scripts/connect-tracker.py --imei 4210209006 --watch-only\n"
-            "  ./scripts/connect-tracker.py --adopt-seen-id 4210209006\n"
+            "  ./scripts/connect-tracker.py --imei 4210209006 --name AB123CD --adopt-seen-id 4210209006\n"
         ),
     )
     parser.add_argument("--imei", default="", help="the tracker's IMEI, as printed on the unit")
@@ -927,7 +1214,11 @@ def main(argv: list[str] | None = None) -> int:
         emit("        That is the next step, and it is the default.")
 
     if args.check:
-        report["ok"] = mapping["ok"] is not False
+        # Unknown is not a pass: with no container found the mapping was never
+        # checked, and a silent exit 0 here would read as a verified listener.
+        report["ok"] = mapping["ok"] is True
+        if mapping["ok"] is None:
+            emit("   could not verify the port mapping, so this check does not pass")
         if args.json:
             print(json.dumps(report, indent=1))
         return 0 if report["ok"] else 1
@@ -1016,7 +1307,7 @@ def main(argv: list[str] | None = None) -> int:
     emit("")
     emit(f"3. Waiting up to {args.timeout}s for the tracker to connect (Ctrl-C to stop)")
     started_local = dt.datetime.now()
-    started_utc = dt.datetime.utcnow()
+    started = dt.datetime.now(dt.timezone.utc)
 
     def log_stage(name: str) -> None:
         if name != "registered":
@@ -1024,16 +1315,34 @@ def main(argv: list[str] | None = None) -> int:
         elif not args.json:
             emit(watch_line(name, 0.0))
 
-    outcome = watch(api, device_id, timeout=args.timeout, started=started_utc, log=log_stage, poll=args.poll)
+    def gather() -> dict:
+        text, source = read_server_log(container)
+        info = diagnose(text, args.imei, since=started_local)
+        info["fix_flags"] = fix_flags(text, args.imei, since=started_local)
+        info["log_readable"] = bool(text)
+        info["log_source"] = source
+        return info
+
+    outcome = watch(api, device_id, timeout=args.timeout, started=started, log=log_stage,
+                    poll=args.poll, evidence=gather)
     report["steps"]["watch"] = {"stage": outcome["stage"], "positions": outcome["positions"]}
+    report["steps"]["checks"] = outcome["checks"]
+    emit("")
+    emit("   Five checks, each judged on its own:")
+    marks = {"ok": "ok  ", "fail": "FAIL", "skip": "--  "}
+    for check in outcome["checks"]:
+        emit(f"   {marks[check['state']]} {check['label']:<32} {check['detail'] or ''}".rstrip())
+        if check["state"] == "fail":
+            emit(f"        fault: {check['fault']}")
+            emit(f"        next:  {check['action']}")
     emit("")
 
-    if outcome["stage"] == "positioned":
-        position = (outcome.get("device") or {})
-        emit(f"   OK  {args.name} is delivering positions ({outcome['positions']} in the window).")
+    if outcome["done"]:
+        emit(f"   OK  {args.name} is delivering fresh, plausible positions "
+             f"({outcome['positions']} in the window).")
         emit("")
-        emit("   Before fitting it to a vehicle, work through docs/TESTING.md. This proves the")
-        emit("   server path, not the radio link, the antenna or the wiring.")
+        emit("   Before fitting it to a vehicle, work through docs/PHYSICAL-ACCEPTANCE.md and")
+        emit("   docs/TESTING.md. This proves the server path, not the radio link, the antenna or the wiring.")
         emit("")
         emit("   Provisioning record for your own spreadsheet — NOT this repository:")
         emit("   " + provisioning_record(args.imei, args.name, args.apn or "?", args.server or "?", args.h02_port))
@@ -1042,18 +1351,19 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(report, indent=1))
         return 0
 
-    # ---- 5. it did not connect: say why --------------------------------
-    emit(f"   No position after {args.timeout}s. Reading Traccar's log to find out why.")
-    log_text, source = read_server_log(container)
-    if not log_text:
-        emit("   (could not read the server log; the advice below is generic)")
-    diagnosis = diagnose(log_text, args.imei, since=started_local)
-    report["steps"]["diagnosis"] = {**diagnosis, "log_source": source}
-    if log_text:
-        emit(f"   log source: {source}, {diagnosis['traffic_lines']} protocol line(s) "
+    # ---- 5. not delivering: say why -------------------------------------
+    emit(f"   Not delivering after {args.timeout}s. The failed checks above name the fault.")
+    diagnosis = outcome["evidence"]
+    report["steps"]["diagnosis"] = diagnosis
+    if not diagnosis.get("log_readable"):
+        emit("   (could not read the server log, so the advice below is limited to that)")
+        shown = {**diagnosis, "kind": "unreadable"}
+    else:
+        emit(f"   log source: {diagnosis['log_source']}, {diagnosis['traffic_lines']} protocol line(s) "
              f"since this run started")
+        shown = diagnosis
     emit("")
-    for line in advice(diagnosis, args.imei, args.server or "<server>", args.h02_port,
+    for line in advice(shown, args.imei, args.server or "<server>", args.h02_port,
                        server_settings=settings):
         emit("   " + line)
     if args.json:

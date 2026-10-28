@@ -6,7 +6,7 @@ import hmac
 from dataclasses import dataclass
 from typing import Optional
 
-from fastapi import Header, HTTPException, Request, status
+from fastapi import Header, HTTPException, Request
 
 ROLE_OWNER = "owner"
 ROLE_FLEET_MANAGER = "fleet_manager"
