@@ -200,6 +200,48 @@ const P = {
       <circle cx="14.4" cy="15.4" r="1.7" />
     </>
   ),
+  /** Overview. Four tiles: the whole console at a glance. */
+  overview: (
+    <>
+      <rect x="3" y="3" width="6" height="6" rx="1" />
+      <rect x="11" y="3" width="6" height="6" rx="1" />
+      <rect x="3" y="11" width="6" height="6" rx="1" />
+      <rect x="11" y="11" width="6" height="6" rx="1" />
+    </>
+  ),
+  /** Scrap. A skip container, open at the top. */
+  scrap: (
+    <>
+      <path d="M3.5 6.5h13l-1.3 9.2a1.2 1.2 0 0 1-1.2 1H6a1.2 1.2 0 0 1-1.2-1z" />
+      <path d="M5.2 6.5 6.4 3.6h7.2l1.2 2.9" />
+    </>
+  ),
+  /** Inventory. A closed box with its lid line. */
+  inventory: (
+    <>
+      <path d="M3 6.2 10 3l7 3.2v7.6L10 17l-7-3.2z" />
+      <path d="M3 6.2 10 9.4l7-3.2M10 9.4V17" />
+    </>
+  ),
+  /** Sales and deliveries. A receipt: a sheet with a torn foot and two lines. */
+  sales: (
+    <>
+      <path d="M5 3h10v14l-2.2-1.4L10.6 17 8.8 15.6 7 17l-2-1.4z" />
+      <path d="M7.6 7.2h4.8M7.6 10.2h4.8" />
+    </>
+  ),
+  /** Open the navigation drawer on a narrow window. */
+  menu: (
+    <>
+      <path d="M3.5 6h13M3.5 10h13M3.5 14h13" />
+    </>
+  ),
+  /** Close the navigation drawer. */
+  close: (
+    <>
+      <path d="M5 5l10 10M15 5 5 15" />
+    </>
+  ),
 }
 
 export default function Icon({ name, size = 20, className = '' }) {

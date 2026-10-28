@@ -139,7 +139,7 @@ const CASES = [
     name: 'weight-ceiling',
     why: 'type painted above weight 600',
     expect: /type painted above weight 600/,
-    build: () => original.replace(ANCHOR, cssInject('.pane *, .tiles * { font-weight: 700 !important }')),
+    build: () => original.replace(ANCHOR, cssInject('.pane *, .sidenav * { font-weight: 700 !important }')),
   },
   {
     name: 'no-focus-ring',
@@ -183,7 +183,7 @@ const CASES = [
     name: 'unpressable-tab',
     why: 'a switcher tile that is present and cannot be pressed',
     expect: /could not be pressed/,
-    build: () => original.replace(ANCHOR, cssInject('.tiles .tile { pointer-events: none !important }')),
+    build: () => original.replace(ANCHOR, cssInject('.sidenav__sub-item { pointer-events: none !important }')),
   },
   {
     name: 'no-shell',

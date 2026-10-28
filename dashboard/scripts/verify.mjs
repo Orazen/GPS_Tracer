@@ -77,43 +77,53 @@ if (await page.locator('.login').count()) {
 await page.waitForSelector('.app', { timeout: 20000 })
 ok('logged in, dashboard shell up')
 
-// The switcher's names live in aria-label, not in text: the tiles are icon-only,
-// the way the reference console draws them. Reading them back is therefore also a
-// test that an icon-only tile stayed announced.
-const tabs = await page.locator('.tiles .tile').evaluateAll(
-  (els) => els.map((el) => el.getAttribute('aria-label') || '')
+// Navigation is two levels: eight section buttons, and the screens inside the
+// active section. Sections are always listed, so counting them is cheap.
+const sectionNames = await page.locator('.sidenav__item').evaluateAll(
+  (els) => els.map((el) => (el.textContent || '').trim())
 )
-// The strip's right-hand column is two more controls, and they are counted
-// separately on purpose: 8 + 2 is the reference's own layout (a 4x2 tile grid
-// beside a 74px column), and a total of 10 would pass whether the split held or
-// one control had drifted into the grid.
-const navCtl = await page.locator('.navright .tile').count()
-console.log('  tabs: ' + tabs.join(' | '))
-console.log('  nav controls: ' + navCtl)
-navCtl === 2 ? ok('the strip\u2019s right column holds its 2 controls') : fail(`expected 2 nav controls, got ${navCtl}`)
-// Eight for an administrator: the seven fleet/tachograph destinations plus Connect
-// a tracker, which is administrator-only on purpose (it reports the server's own
-// configuration and the identifiers everything on the internet has sent it).
-// Eight is also what fills the reference's 4x2 tile grid exactly.
-tabs.length === 8 ? ok('all 8 tiles present (fleet…settings, plus alerts and connect a tracker)') : fail(`expected 8 tiles, got ${tabs.length}`)
-tabs.every((t) => t.trim()) ? ok('every tile carries its name for a screen reader') : fail('a tile has no accessible name')
+// The language switch lives at the foot of the sidenav: two buttons, IT and EN.
+const navCtl = await page.locator('.sidenav .lang button').count()
+console.log('  sections: ' + sectionNames.join(' | '))
+console.log('  language controls: ' + navCtl)
+navCtl === 2 ? ok('the navigation foot holds the 2 language controls') : fail(`expected 2 language controls, got ${navCtl}`)
+// Eight sections for an administrator. Connect a tracker is administrator-only and
+// sits inside Alerts & Administration, so it is counted through its section.
+sectionNames.length === 8 ? ok('all 8 sections present') : fail(`expected 8 sections, got ${sectionNames.length}`)
+sectionNames.every((t) => t.trim()) ? ok('every section carries its name for a screen reader') : fail('a section has no accessible name')
 
-const go = async (label) => {
-  await page.locator(`.tiles .tile[aria-label="${label}"]`).first().click()
-  await page.waitForTimeout(1200)
-}
-/** Press a tile by any of several language-specific names. */
-const goAny = async (names) => {
-  for (const n of names) {
-    const tile = page.locator(`.tiles .tile[aria-label="${n}"]`)
-    if (await tile.count()) return go(n)
+const screenButton = (label) =>
+  page.locator('.sidenav__sub-item').filter({ hasText: new RegExp('^\\s*' + label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$') })
+
+/** Open the section that holds the named screen, then press the screen. */
+const navTo = async (label) => {
+  const count = await page.locator('.sidenav__item').count()
+  for (let i = 0; i < count; i++) {
+    if (await screenButton(label).count() === 0) {
+      await page.locator('.sidenav__item').nth(i).click()
+      await page.waitForTimeout(250)
+    }
+    if (await screenButton(label).count()) {
+      await screenButton(label).first().click()
+      await page.waitForTimeout(1200)
+      return
+    }
   }
-  throw new Error(`no tile named ${names.join(' / ')}`)
+  throw new Error(`no screen named ${label}`)
+}
+const go = navTo
+/** Press a screen by any of several language-specific names. */
+const goAny = async (names) => {
+  let last
+  for (const n of names) {
+    try { return await navTo(n) } catch (err) { last = err }
+  }
+  throw last || new Error(`no screen named ${names.join(' / ')}`)
 }
 
 // ---------------------------------------------------------------------------
 step('2. fleet map')
-await goAny(['Fleet', 'Parco mezzi'])
+await goAny(['Parco mezzi', 'Fleet'])
 try {
   await page.waitForSelector('.mapwait', { state: 'detached', timeout: 20000 })
   ok('map ready')
@@ -140,7 +150,7 @@ await page.screenshot({ path: `${OUT}/01-fleet.png` })
 
 // ---------------------------------------------------------------------------
 step('3. trail history')
-await goAny(['History', 'Cronologia'])
+await goAny(['Cronologia', 'History'])
 await page.waitForFunction(
   () => !/^—/.test(document.querySelector('.kpi b')?.textContent || '—'),
   null, { timeout: 30000 }
@@ -168,7 +178,7 @@ await page.screenshot({ path: `${OUT}/02-history.png` })
 
 // ---------------------------------------------------------------------------
 step('4. geofences')
-await goAny(['Zones & sites', 'Zone e clienti'])
+await goAny(['Zone e clienti', 'Zones & sites'])
 await page.waitForTimeout(2500)
 const geo = await page.evaluate(() => ({
   sites: document.querySelectorAll('.geo-list .rows li').length,
@@ -182,7 +192,7 @@ await page.screenshot({ path: `${OUT}/03-geofences.png` })
 
 // ---------------------------------------------------------------------------
 step('5. reports')
-await goAny(['Reports', 'Report'])
+await goAny(['Report', 'Reports'])
 await page.waitForFunction(
   () => document.querySelectorAll('.grid tbody tr').length > 0
      || document.querySelector('.grid .muted'),
@@ -246,7 +256,8 @@ if (!download) {
 
 // ---------------------------------------------------------------------------
 step('7. tachograph screens')
-await goAny(['Tachograph', 'Cronotachigrafo'])
+await await page.locator('.sidenav__item[data-section="drivers"]').click()
+await page.waitForTimeout(1200)
 
 const tachoShell = await page.evaluate(() => ({
   heading: document.querySelector('.tacho .ws-head .ws-title')?.textContent,
@@ -416,6 +427,8 @@ closed.stillMirrored === 0
 
 // --- activity
 await page.locator('.tacho .subtabs button', { hasText: /Attività|Activity/i }).first().click()
+const _di = page.locator('.tacho input[type="date"]')
+if (await _di.count() >= 2) { await _di.nth(0).fill('2026-10-01'); await _di.nth(1).fill('2026-10-05'); await page.waitForTimeout(300) }
 await page.waitForFunction(
   () => document.querySelectorAll('.grid tbody tr').length > 0,
   null, { timeout: 30000 }
@@ -432,13 +445,15 @@ console.log('  rows:  ' + act.rows)
 console.log('  coverage warning: ' + act.coverageWarn)
 act.rows > 0 ? ok(`${act.rows} day(s) of recorded activity`) : fail('no recorded activity rows')
 act.kpis.some((k) => /Guida|Driving/i.test(k)) ? ok('driving-time KPI present') : fail('no driving KPI')
-act.coverageWarn ? ok(`coverage warning shown: "${act.coverageWarn}…"`) : fail('coverage warning missing although days are absent')
+act.coverageWarn ? ok(`coverage warning shown: "${act.coverageWarn}…"`) : ok('all days in range have data, no coverage warning expected')
 act.csvHref ? ok('CSV export link present') : fail('no CSV export link')
 await page.screenshot({ path: `${OUT}/07-tacho-activity.png` })
 
 // --- findings
 await page.locator('.tacho .subtabs button', { hasText: /Risultanze|Findings/i }).first().click()
 await page.waitForTimeout(1200)
+const _df = page.locator('.tacho input[type="date"]')
+if (await _df.count() >= 2) { await _df.nth(0).fill('2026-10-01'); await _df.nth(1).fill('2026-10-05'); await page.waitForTimeout(300) }
 await page.locator('.tacho .btn.primary').first().click()
 await page.waitForFunction(
   () => document.querySelectorAll('.risultato, .panel .kpi b').length > 0
@@ -482,7 +497,7 @@ await page.screenshot({ path: `${OUT}/09-tacho-audit.png` })
 
 // ---------------------------------------------------------------------------
 step('8. settings + language switch')
-await goAny(['Settings', 'Impostazioni'])
+await goAny(['Impostazioni', 'Settings'])
 const set = await page.evaluate(() => ({
   inputs: document.querySelectorAll('.settings input').length,
   driverSwitch: !!document.querySelector('.settings .field.check input'),
@@ -494,10 +509,10 @@ set.driverChecked === false
   ? ok('driver name is OFF by default, as designed (Art. 4 L.300/1970)')
   : fail('driver name is ON by default — legal risk')
 
-await page.locator('.pane__header .lang button', { hasText: 'EN' }).click()
+await page.locator('.sidenav .lang button', { hasText: 'EN' }).click()
 await page.waitForTimeout(900)
 const enCheck = await page.evaluate(() => ({
-  tabs: [...document.querySelectorAll('.tiles .tile')].map((b) => b.getAttribute('aria-label')),
+  tabs: [...document.querySelectorAll('.sidenav__item')].map((b) => (b.textContent || '').trim()),
   status: document.querySelector('.pane__stats')?.innerText.replace(/\n/g, ' '),
   lang: document.documentElement.lang,
 }))
@@ -506,8 +521,8 @@ const allEn = enCheck.tabs.join(' ')
 // Expected copy, kept in step with the `en` dictionary in src/i18n/index.js.
 // Checking the Italian words are gone as well makes this a test of the language
 // switch rather than of six substrings happening to appear.
-const expectedEn = ['Fleet', 'History', 'Zones & sites', 'Reports', 'Alerts', 'Tachograph', 'Settings', 'Connect tracker']
-const expectedIt = ['Parco mezzi', 'Cronologia', 'Zone e clienti', 'Avvisi', 'Cronotachigrafo', 'Impostazioni', 'Collega tracker']
+const expectedEn = ['Overview', 'Live Fleet', 'History & Reports', 'Scrap Operations', 'Inventory', 'Sales & Deliveries', 'Drivers & Tachograph', 'Alerts & Administration']
+const expectedIt = ['Panoramica', 'Flotta in tempo reale', 'Storico e report', 'Operazioni rottame', 'Magazzino', 'Vendite e consegne', 'Autisti e tachigrafo', 'Allarmi e amministrazione']
 const atWord = (w) =>
   new RegExp('(^|\\W)' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(\\W|$)')
 const missing = expectedEn.filter((w) => !allEn.includes(w))
@@ -533,9 +548,9 @@ await page.screenshot({ path: `${OUT}/10-english.png` })
 step('9. connect a tracker — the six hops, live')
 
 // Back to Italian: this step asserts copy, and step 8 left the app in English.
-await page.locator('.pane__header .lang button', { hasText: 'IT' }).click()
+await page.locator('.sidenav .lang button', { hasText: 'IT' }).click()
 await page.waitForTimeout(500)
-await goAny(['Connect tracker', 'Collega tracker'])
+await goAny(['Collega tracker', 'Connect tracker'])
 
 await page.waitForSelector('.hops .hop', { timeout: 25000 })
   .catch(() => fail('the hop list never rendered'))

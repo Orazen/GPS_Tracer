@@ -44,10 +44,6 @@ class Settings:
             problems.append("SCRAP_DATABASE_URL must be a PostgreSQL URL.")
         return problems
 
-    @property
-    def actor_roles_allowed(self) -> frozenset:
-        return frozenset({"owner", "fleet_manager", "admin"})
-
 
 def _int_env(name: str, default: int) -> int:
     raw = os.environ.get(name)

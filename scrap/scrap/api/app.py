@@ -3,24 +3,27 @@
 from __future__ import annotations
 
 import datetime as _dt
-import json
 import logging
 from contextlib import asynccontextmanager
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .. import __version__
 from ..config import Settings, load_settings
 from ..db import Database, MigrationError
+from ..domain.idempotency import IdempotencyKeyError, normalise_key, request_hash, scoped_key
 from ..domain.weights import WeightError, compute_net
-from ..repository import ScrapRepository
+from ..repository import Conflict, NotFound, ScrapRepository
 from .security import Actor, Authenticator, make_dependencies, require_write
 
 logger = logging.getLogger(__name__)
+
+IDEMPOTENCY_HEADER = "Idempotency-Key"
+REPLAY_HEADER = "Idempotent-Replayed"
 
 
 class MaterialRequest(BaseModel):
@@ -53,6 +56,8 @@ class WeighRequest(BaseModel):
     unit: str = "kg"
     ticket_number: Optional[str] = None
     scale_ref: Optional[str] = None
+    allow_reweigh: bool = False
+    supersede_reason: Optional[str] = Field(default=None, max_length=500)
 
 
 class MovementRequest(BaseModel):
@@ -93,7 +98,7 @@ class DeliveryRequest(BaseModel):
 
 
 class ConfirmDeliveryRequest(BaseModel):
-    delivered_by: str
+    delivered_by: str = Field(..., min_length=1, max_length=120)
     notes: Optional[str] = None
 
 
@@ -128,8 +133,36 @@ def create_app(settings: Optional[Settings] = None, db: Optional[Database] = Non
         allow_origins=resolved.allowed_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PATCH"],
-        allow_headers=["Authorization", "Content-Type", "X-Actor", "X-Actor-Role", "X-Service-Token"],
+        allow_headers=["Authorization", "Content-Type", "X-Actor", "X-Actor-Role", "X-Service-Token", IDEMPOTENCY_HEADER],
+        expose_headers=[REPLAY_HEADER],
     )
+
+    @app.exception_handler(NotFound)
+    async def _not_found(request: Request, exc: NotFound) -> JSONResponse:
+        return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.exception_handler(Conflict)
+    async def _conflict(request: Request, exc: Conflict) -> JSONResponse:
+        return JSONResponse(status_code=409, content={"detail": str(exc)})
+
+    def _idempotency(raw_key: Optional[str], route: str, actor: Actor, payload: Any):
+        """Return (scoped_key, request_hash) for a keyed request, or (None, None)."""
+        try:
+            key = normalise_key(raw_key)
+        except IdempotencyKeyError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        if key is None:
+            return None, None
+        return scoped_key(route, actor.name, key), request_hash(payload)
+
+    def _settle(response: Response, created: bool, stored_hash: Optional[str], expected_hash: Optional[str]) -> None:
+        """A replay of an earlier keyed request returns the original result with 200, not 201."""
+        if created:
+            return
+        if stored_hash != expected_hash:
+            raise HTTPException(status_code=409, detail="Idempotency-Key was already used for a different request")
+        response.status_code = status.HTTP_200_OK
+        response.headers[REPLAY_HEADER] = "true"
 
     @app.get("/healthz", response_class=PlainTextResponse)
     async def healthz() -> str:
@@ -158,7 +191,8 @@ def create_app(settings: Optional[Settings] = None, db: Optional[Database] = Non
 
     @app.get("/api/materials")
     async def list_materials(actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
-        return {"count": len(repository.list_materials()), "materials": repository.list_materials()}
+        rows = repository.list_materials()
+        return {"count": len(rows), "materials": rows}
 
     @app.post("/api/warehouses", status_code=status.HTTP_201_CREATED)
     async def create_warehouse(payload: WarehouseRequest, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
@@ -172,17 +206,27 @@ def create_app(settings: Optional[Settings] = None, db: Optional[Database] = Non
 
     @app.get("/api/warehouses")
     async def list_warehouses(actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
-        return {"count": len(repository.list_warehouses()), "warehouses": repository.list_warehouses()}
+        rows = repository.list_warehouses()
+        return {"count": len(rows), "warehouses": rows}
 
     @app.post("/api/loads", status_code=status.HTTP_201_CREATED)
-    async def create_load(payload: LoadRequest, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+    async def create_load(
+        payload: LoadRequest,
+        response: Response,
+        actor: Actor = Depends(authenticate),
+        idempotency_key: Optional[str] = Header(default=None, alias=IDEMPOTENCY_HEADER),
+    ) -> Dict[str, Any]:
         require_write(actor)
-        load_id = repository.create_load(
+        scoped, digest = _idempotency(idempotency_key, "loads.create", actor, payload.model_dump())
+        load_id, created, stored = repository.create_load(
             truck_ref=payload.truck_ref, driver_ref=payload.driver_ref, customer_ref=payload.customer_ref,
             supplier_ref=payload.supplier_ref, origin=payload.origin, destination=payload.destination,
             material_code=payload.material_code, created_by=actor.name,
+            idempotency_key=scoped, request_hash=digest,
         )
-        repository.audit(actor.name, actor.role, "load.create", "load", load_id, payload.model_dump(), actor.source_ip)
+        _settle(response, created, stored, digest)
+        if created:
+            repository.audit(actor.name, actor.role, "load.create", "load", load_id, payload.model_dump(), actor.source_ip)
         from ..domain.qr import make_qr_png
         qr = make_qr_png(load_id)
         return {"load_id": load_id, "qr_available": qr is not None, "load": repository.get_load(load_id)}
@@ -212,32 +256,50 @@ def create_app(settings: Optional[Settings] = None, db: Optional[Database] = Non
         return repository.get_load(load_id)
 
     @app.post("/api/weigh", status_code=status.HTTP_201_CREATED)
-    async def create_weigh(payload: WeighRequest, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+    async def create_weigh(
+        payload: WeighRequest,
+        response: Response,
+        actor: Actor = Depends(authenticate),
+        idempotency_key: Optional[str] = Header(default=None, alias=IDEMPOTENCY_HEADER),
+    ) -> Dict[str, Any]:
         require_write(actor)
-        if not repository.get_load(payload.load_id):
-            raise HTTPException(status_code=404, detail="no such load")
+        if payload.allow_reweigh and not (payload.supersede_reason or "").strip():
+            raise HTTPException(status_code=400, detail="supersede_reason is required when allow_reweigh is true")
         try:
             net = compute_net(payload.gross, payload.tare, payload.unit)
         except WeightError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
-        ticket_id = repository.create_weigh_ticket(
+        scoped, digest = _idempotency(idempotency_key, "weigh.create", actor, payload.model_dump())
+        ticket_id, created, stored, superseded = repository.create_weigh_ticket(
             load_id=payload.load_id, gross=payload.gross, tare=payload.tare, net=net,
             unit=payload.unit, ticket_number=payload.ticket_number, scale_ref=payload.scale_ref,
-            operator=actor.name,
+            operator=actor.name, allow_reweigh=payload.allow_reweigh,
+            supersede_reason=(payload.supersede_reason or "").strip() or None,
+            idempotency_key=scoped, request_hash=digest,
         )
-        repository.set_load_status(payload.load_id, "weighed")
-        repository.audit(actor.name, actor.role, "weigh.create", "load", payload.load_id,
-                        {"ticket_id": ticket_id, "gross": payload.gross, "tare": payload.tare, "net": net}, actor.source_ip)
-        return {"ticket_id": ticket_id, "load_id": payload.load_id, "gross": payload.gross, "tare": payload.tare, "net": net, "unit": payload.unit}
+        _settle(response, created, stored, digest)
+        if created:
+            repository.audit(actor.name, actor.role, "weigh.create", "load", payload.load_id,
+                             {"ticket_id": ticket_id, "gross": payload.gross, "tare": payload.tare, "net": net,
+                              "superseded_ticket_ids": superseded, "supersede_reason": payload.supersede_reason},
+                             actor.source_ip)
+        ticket = repository.get_weigh_ticket(ticket_id) or {}
+        return {**ticket, "superseded_ticket_ids": superseded}
 
     @app.get("/api/loads/{load_id}/weigh-tickets")
     async def list_weigh_tickets(load_id: str, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
-        return {"count": len(repository.list_weigh_tickets(load_id)), "tickets": repository.list_weigh_tickets(load_id)}
+        rows = repository.list_weigh_tickets(load_id)
+        return {"count": len(rows), "tickets": rows}
 
     @app.post("/api/stock/movements", status_code=status.HTTP_201_CREATED)
-    async def create_movement(payload: MovementRequest, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+    async def create_movement(
+        payload: MovementRequest,
+        response: Response,
+        actor: Actor = Depends(authenticate),
+        idempotency_key: Optional[str] = Header(default=None, alias=IDEMPOTENCY_HEADER),
+    ) -> Dict[str, Any]:
         require_write(actor)
-        from ..domain.stock import Movement, would_go_negative
+        from ..domain.stock import Movement
         movement = Movement(
             material_id=0, warehouse_id=0, quantity=payload.quantity,
             movement_type=payload.movement_type, unit=payload.unit,
@@ -246,18 +308,19 @@ def create_app(settings: Optional[Settings] = None, db: Optional[Database] = Non
         errors = movement.validate()
         if errors:
             raise HTTPException(status_code=400, detail="; ".join(errors))
-        current = repository.balance(payload.material_code, payload.warehouse_code)
-        if would_go_negative(current, movement):
-            raise HTTPException(status_code=409, detail="movement would make stock negative")
-        ticket_id = repository.create_movement(
+        scoped, digest = _idempotency(idempotency_key, "stock.movement", actor, payload.model_dump())
+        movement_id, created, stored, balance_after = repository.create_movement(
             material_code=payload.material_code, warehouse_code=payload.warehouse_code,
             movement_type=payload.movement_type, quantity=payload.quantity, unit=payload.unit,
             reference=payload.reference, actor=actor.name, reason=payload.reason,
+            idempotency_key=scoped, request_hash=digest,
         )
-        repository.audit(actor.name, actor.role, "stock.movement", "movement", str(ticket_id),
-                        {"material": payload.material_code, "warehouse": payload.warehouse_code,
-                         "type": payload.movement_type, "quantity": payload.quantity}, actor.source_ip)
-        return {"movement_id": ticket_id, "new_balance": repository.balance(payload.material_code, payload.warehouse_code)}
+        _settle(response, created, stored, digest)
+        if created:
+            repository.audit(actor.name, actor.role, "stock.movement", "movement", str(movement_id),
+                             {"material": payload.material_code, "warehouse": payload.warehouse_code,
+                              "type": payload.movement_type, "quantity": payload.quantity}, actor.source_ip)
+        return {"movement_id": movement_id, "new_balance": balance_after}
 
     @app.get("/api/stock/balance")
     async def stock_balance(material_code: str, warehouse_code: str, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
@@ -266,7 +329,7 @@ def create_app(settings: Optional[Settings] = None, db: Optional[Database] = Non
 
     @app.get("/api/stock/movements")
     async def list_movements(material_code: Optional[str] = None, warehouse_code: Optional[str] = None,
-                            limit: int = Query(default=200, ge=1, le=500), actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+                             limit: int = Query(default=200, ge=1, le=500), actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
         rows = repository.list_movements(material_code=material_code, warehouse_code=warehouse_code, limit=limit)
         return {"count": len(rows), "movements": rows}
 
@@ -288,23 +351,28 @@ def create_app(settings: Optional[Settings] = None, db: Optional[Database] = Non
 
     # orders
     @app.post("/api/orders", status_code=status.HTTP_201_CREATED)
-    async def create_order(payload: OrderRequest, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+    async def create_order(
+        payload: OrderRequest,
+        response: Response,
+        actor: Actor = Depends(authenticate),
+        idempotency_key: Optional[str] = Header(default=None, alias=IDEMPOTENCY_HEADER),
+    ) -> Dict[str, Any]:
         require_write(actor)
         items = [i.model_dump() for i in payload.items]
-        try:
-            order_number = repository.create_order(
-                customer_code=payload.customer_code, load_id=payload.load_id,
-                created_by=actor.name, items=items, currency=payload.currency,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc))
-        repository.audit(actor.name, actor.role, "order.create", "order", order_number, {"load_id": payload.load_id}, actor.source_ip)
-        repository.set_order_status(order_number, "confirmed")
+        scoped, digest = _idempotency(idempotency_key, "orders.create", actor, payload.model_dump())
+        order_number, created, stored = repository.create_order(
+            customer_code=payload.customer_code, load_id=payload.load_id,
+            created_by=actor.name, items=items, currency=payload.currency,
+            idempotency_key=scoped, request_hash=digest,
+        )
+        _settle(response, created, stored, digest)
+        if created:
+            repository.audit(actor.name, actor.role, "order.create", "order", order_number, {"load_id": payload.load_id}, actor.source_ip)
         return repository.get_order(order_number)
 
     @app.get("/api/orders")
     async def list_orders(status: Optional[str] = None, limit: int = Query(default=100, ge=1, le=500),
-                         actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+                          actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
         rows = repository.list_orders(status=status, limit=limit)
         return {"count": len(rows), "orders": rows}
 
@@ -326,21 +394,29 @@ def create_app(settings: Optional[Settings] = None, db: Optional[Database] = Non
 
     # deliveries
     @app.post("/api/deliveries", status_code=status.HTTP_201_CREATED)
-    async def create_delivery(payload: DeliveryRequest, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+    async def create_delivery(
+        payload: DeliveryRequest,
+        response: Response,
+        actor: Actor = Depends(authenticate),
+        idempotency_key: Optional[str] = Header(default=None, alias=IDEMPOTENCY_HEADER),
+    ) -> Dict[str, Any]:
         require_write(actor)
-        try:
-            delivery_id = repository.create_delivery(payload.order_number, payload.load_id, payload.notes)
-        except ValueError as exc:
-            raise HTTPException(status_code=404, detail=str(exc))
-        repository.audit(actor.name, actor.role, "delivery.create", "delivery", str(delivery_id), {"order": payload.order_number}, actor.source_ip)
+        scoped, digest = _idempotency(idempotency_key, "deliveries.create", actor, payload.model_dump())
+        delivery_id, created, stored = repository.create_delivery(
+            payload.order_number, payload.load_id, payload.notes,
+            idempotency_key=scoped, request_hash=digest,
+        )
+        _settle(response, created, stored, digest)
+        if created:
+            repository.audit(actor.name, actor.role, "delivery.create", "delivery", str(delivery_id), {"order": payload.order_number}, actor.source_ip)
         return {"delivery_id": delivery_id, "order_number": payload.order_number}
 
     @app.post("/api/deliveries/{delivery_id}/confirm")
     async def confirm_delivery(delivery_id: int, payload: ConfirmDeliveryRequest, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
         require_write(actor)
-        repository.confirm_delivery(delivery_id, payload.delivered_by, payload.notes)
+        result = repository.confirm_delivery(delivery_id, payload.delivered_by, payload.notes)
         repository.audit(actor.name, actor.role, "delivery.confirm", "delivery", str(delivery_id), {"by": payload.delivered_by}, actor.source_ip)
-        return {"delivery_id": delivery_id, "status": "delivered"}
+        return result
 
     # traceability
     @app.get("/api/trace/{load_id}")
@@ -351,10 +427,9 @@ def create_app(settings: Optional[Settings] = None, db: Optional[Database] = Non
 
     # reports
     @app.get("/api/reports/loads.csv")
-    async def loads_report(actor: Actor = Depends(authenticate)) -> "StreamingResponse":
+    async def loads_report(actor: Actor = Depends(authenticate)) -> StreamingResponse:
         import csv as _csv
         import io as _io
-        from fastapi.responses import StreamingResponse
         rows = repository.load_report_rows()
         repository.audit(actor.name, actor.role, "report.export", "load", None, {"format": "csv", "rows": len(rows)}, actor.source_ip)
 

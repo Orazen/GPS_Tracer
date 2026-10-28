@@ -91,6 +91,17 @@ const TACHO_URL = (process.env.TACHO_INTERNAL_URL || 'http://127.0.0.1:8094').re
 )
 const TACHO_TOKEN = process.env.TACHO_API_TOKEN || ''
 
+// The scrap (loads, weighing, stock, sales) service. Same trust model as the
+// tachograph service: the token stays here, the identity is forwarded.
+const SCRAP_URL = (process.env.SCRAP_INTERNAL_URL || 'http://127.0.0.1:8085').replace(
+  /\/$/,
+  ''
+)
+const SCRAP_TOKEN = process.env.SCRAP_API_TOKEN || ''
+// Role for a signed-in, non-admin Traccar user. Read-only by default: writing
+// loads, weights and stock is opt-in per deployment, never implied by login.
+const SCRAP_DEFAULT_ROLE = (process.env.SCRAP_DEFAULT_ROLE || 'viewer').trim()
+
 const DIST = join(HERE, 'dist')
 const MAX_BODY = Number(process.env.DASHBOARD_MAX_BODY_BYTES || 16 * 1024 * 1024)
 const UPSTREAM_TIMEOUT_MS = Number(process.env.DASHBOARD_UPSTREAM_TIMEOUT_MS || 60000)
@@ -440,6 +451,16 @@ export function tachoRole(user) {
   return 'fleet_manager'
 }
 
+const SCRAP_ROLES = new Set(['owner', 'fleet_manager', 'warehouse_operator', 'viewer'])
+
+/** Traccar user -> scrap role. Admins write; everyone else reads unless opted in. */
+export function scrapRole(user) {
+  if (!user) return 'viewer'
+  if (user.administrator === true) return 'owner'
+  if (user.readonly === true) return 'viewer'
+  return SCRAP_ROLES.has(SCRAP_DEFAULT_ROLE) ? SCRAP_DEFAULT_ROLE : 'viewer'
+}
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -510,6 +531,47 @@ async function proxyTacho(req, res, url) {
   res.end(body)
 }
 
+async function proxyScrap(req, res, url) {
+  if (!SCRAP_TOKEN) {
+    return sendJson(res, 503, {
+      detail: 'the dashboard has no SCRAP_API_TOKEN configured, so it cannot reach the scrap service',
+    })
+  }
+  const method = req.method || 'GET'
+  if (!['GET', 'POST'].includes(method)) {
+    return sendJson(res, 405, { detail: `${method} is not proxied` }, { Allow: 'GET, POST' })
+  }
+  const user = await identify(req)
+  if (!user) {
+    return sendJson(res, 401, {
+      detail: 'sign in to Traccar first: the scrap service needs a known user',
+    })
+  }
+
+  // /scrap/api/... -> {SCRAP_URL}/api/...
+  const target = `${SCRAP_URL}${url.pathname.replace(/^\/scrap/, '')}${url.search}`
+  const headers = {
+    authorization: `Bearer ${SCRAP_TOKEN}`,
+    accept: req.headers.accept || 'application/json',
+    'x-actor': user.email || user.name || `user-${user.id}`,
+    'x-actor-role': scrapRole(user),
+  }
+  if (req.headers['content-type']) headers['content-type'] = req.headers['content-type']
+  // A retry of one action must carry the same key, or the service cannot dedupe it.
+  if (req.headers['idempotency-key']) headers['idempotency-key'] = req.headers['idempotency-key']
+
+  const options = { method, headers, redirect: 'manual' }
+  if (method !== 'GET' && method !== 'HEAD') options.body = await readBody(req)
+
+  const upstream = await fetchWithTimeout(target, options)
+  const body = Buffer.from(await upstream.arrayBuffer())
+  res.writeHead(upstream.status, {
+    ...responseHeadersFrom(upstream),
+    'Cache-Control': 'no-store, private',
+  })
+  res.end(body)
+}
+
 async function serveStatic(req, res, url) {
   if (!existsSync(DIST)) {
     return send(
@@ -568,6 +630,9 @@ const server = createServer(async (req, res) => {
     if (url.pathname.startsWith('/api/')) return await proxyTraccar(req, res, url)
     if (url.pathname === '/tacho' || url.pathname.startsWith('/tacho/')) {
       return await proxyTacho(req, res, url)
+    }
+    if (url.pathname === '/scrap' || url.pathname.startsWith('/scrap/')) {
+      return await proxyScrap(req, res, url)
     }
     return await serveStatic(req, res, url)
   } catch (err) {

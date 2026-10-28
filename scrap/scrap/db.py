@@ -9,7 +9,8 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
-from typing import Any, List, Optional, Sequence, Tuple
+from contextlib import contextmanager
+from typing import Any, Iterator, List, Optional, Sequence, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +57,22 @@ class Database:
         try:
             with connection.cursor() as cursor:
                 cursor.execute(sql, params)
+        except Exception:
+            connection.rollback()
+            raise
+        connection.commit()
+
+    @contextmanager
+    def transaction(self) -> Iterator[Any]:
+        """Run several statements in one transaction; commit on success, roll back on error.
+
+        Use this for any write that also reads or returns rows (INSERT ... RETURNING,
+        SELECT ... FOR UPDATE). fetch_one/fetch_all never commit.
+        """
+        connection = self.connect()
+        try:
+            with connection.cursor() as cursor:
+                yield cursor
         except Exception:
             connection.rollback()
             raise

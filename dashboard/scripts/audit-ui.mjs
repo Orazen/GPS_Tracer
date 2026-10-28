@@ -134,7 +134,19 @@ await page.waitForTimeout(2500)
  */
 let tileFailure = 'missing'
 const goTo = async (name) => {
-  const tile = page.locator(`.tiles .tile[aria-label="${name}"]`)
+  // Open each section until the named screen is listed under it.
+  const screen = page.locator('.sidenav__sub-item').filter({ hasText: new RegExp('^\\s*' + name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*$') })
+  const sections = await page.locator('.sidenav__item').count()
+  for (let i = 0; i < sections; i++) {
+    const sec = page.locator('.sidenav__item').nth(i)
+    const secText = (await sec.innerText()).trim()
+    if (secText === name || secText.includes(name)) { await sec.click({ timeout: 5000 }).catch(() => {}); await page.waitForTimeout(200); return true }
+    if (await screen.count()) { await screen.first().click({ timeout: 5000 }).catch(() => {}); return true }
+    await sec.click({ timeout: 5000 }).catch(() => {})
+    await page.waitForTimeout(200)
+    if (await screen.count()) { await screen.first().click({ timeout: 5000 }).catch(() => {}); return true }
+  }
+  const tile = screen
   if (!(await tile.count())) { tileFailure = 'missing'; return false }
   try {
     // 5s, not Playwright's 30s default: a switcher tile that has not answered in

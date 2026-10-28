@@ -19,6 +19,7 @@ docker compose --profile tools run --rm simulator --reset
 
 ./scripts/smoke-test.sh                    # is this deployment usable?
 
+uv run --with pytest python -m pytest scripts/tests -q   # 129 pass: the tracker tool, no network, docker or hardware
 cd tacho      && python -m pytest tests/ -q    # 292 pass, no database needed
 cd tacho      && TACHO_TEST_DATABASE_URL=... python -m pytest tests/ -q   # 353 with one
 
@@ -33,6 +34,12 @@ storage and every screen downstream of a stored position. It covers nothing abou
 the radio link, the SIM and APN, GNSS reception or the device's firmware — which
 is why the rest of this document still has to be worked through with a tracker in
 hand.
+
+`scripts/connect-tracker.py` judges a real tracker in five separate checks — registered,
+connection received, valid fix, fresh position, plausible position — and names the fault
+and the next manual action for each one. The unit tests cover every branch with fixtures.
+The hardware steps that follow it are in [`PHYSICAL-ACCEPTANCE.md`](PHYSICAL-ACCEPTANCE.md),
+which is **not run** until someone has done them on a unit.
 
 `dashboard/scripts/verify.mjs` needs a running stack with seeded data and Chromium
 (`npx playwright install chromium`). It signs in, walks all eight screens, clicks

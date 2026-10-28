@@ -7,7 +7,7 @@ Negative balance is refused by default.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List, Optional
 
 
@@ -45,6 +45,8 @@ class Movement:
             problems.append("quantity cannot be zero")
         if self.quantity < 0 and self.movement_type not in ("adjustment",):
             problems.append("quantity must be positive for this movement type")
+        if self.movement_type == "adjustment" and not (self.reason or "").strip():
+            problems.append("adjustment requires a reason")
         return problems
 
 

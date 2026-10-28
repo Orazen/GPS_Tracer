@@ -13,34 +13,12 @@ import Tacho from './components/Tacho'
 import ConnectTracker from './components/ConnectTracker'
 import { SectionGroup } from './components/Section'
 import { ago } from './api/traccar'
-
-// The module switcher, in the order the reference console puts it: where the
-// fleet is, where it has been, what it crosses, what it did, what needs an
-// answer, what the law says about that, and how this console is configured.
-//
-// Eight entries, which is not a coincidence: the reference lays its switcher out
-// as a 4x2 grid of 48px tiles in a 100px strip, and eight is exactly what fills
-// it. One list, so the tiles and the title bar below them can never disagree
-// about which screen is which.
-const NAV = ['map', 'history', 'geofences', 'reports', 'alerts', 'tacho', 'settings', 'connect']
-const ICON_OF = {
-  map: 'fleet',
-  history: 'history',
-  geofences: 'zones',
-  reports: 'reports',
-  alerts: 'bell',
-  tacho: 'tacho',
-  settings: 'settings',
-  connect: 'connect',
-}
-
-// Onboarding is an administrator's job: that screen reports this server's own
-// configuration and the raw identifiers of everything that has probed the public
-// H02 port. Hiding the tile keeps it out of a read-only user's way; the server
-// enforces the same rule independently, so this is presentation, not security.
-const navFor = (user) =>
-  user?.administrator === true ? NAV : NAV.filter((v) => v !== 'connect')
-const labelOf = (t, v) => t(v === 'map' ? 'fleet' : v)
+import AppNav from './components/shell/AppNav'
+import PageHeader from './components/shell/PageHeader'
+import Overview from './components/shell/Overview'
+import { NotYetAvailable } from './components/shell/States'
+import ScrapScreen from './components/scrap/ScrapScreen'
+import { sectionOf, screenLabel, visibleSections } from './components/shell/sections'
 
 const DEFAULTS = {
   idleMin: 20,
@@ -62,7 +40,10 @@ export default function App({ user, onLogout }) {
   const [events, setEvents] = useState([])
   const [geofences, setGeofences] = useState([])
   const [selectedId, setSelectedId] = useState(null)
-  const [view, setView] = useState('map')
+  const [view, setView] = useState('overview')
+  // True once a position read has succeeded. Until then the fleet counts on the
+  // Overview are not known, and it says so instead of showing a zero.
+  const [live, setLive] = useState(false)
   // The map's own "frame the fleet" button. Bumping this re-runs FleetMap's fit
   // effect, which is the only way to ask MapLibre to re-frame a view without
   // handing it the map object.
@@ -147,6 +128,7 @@ export default function App({ user, onLogout }) {
         }
         setPositions(m)
         setEvents(e)
+        setLive(true)
         setErr(null)
       } catch (e2) {
         if (e2.auth) onLogout()
@@ -211,6 +193,18 @@ export default function App({ user, onLogout }) {
           canvas, two zoom buttons and an attribution toggle -- which is to say
           useless. Here it is the first. */}
       <a className="skip" href="#main">{t('skipToContent')}</a>
+      <AppNav
+        sections={visibleSections(user)}
+        view={view}
+        onView={setView}
+        lang={lang}
+        onLang={setLang}
+        t={t}
+        email={user.email}
+        onLogout={onLogout}
+      />
+
+      <div className="app-stage">
       {view === 'map' && (
         <div className="mapwrap">
           <FleetMap
@@ -226,36 +220,14 @@ export default function App({ user, onLogout }) {
 
       <div className={`shell${narrow ? ' shell-narrow' : ''}`}>
         <aside className="pane">
-          {/* The switcher: eight 48px tiles on a 4x2 grid, and a right-hand
-              column of two controls behind a 1px rule that is inset 16px at both
-              ends rather than running the full height. Measured geometry -- see
-              the foot of styles.css. */}
-          <nav className="pane__nav" aria-label={t('appName')}>
-            <div className="tiles">
-              {navFor(user).map((v) => (
-                <button
-                  key={v}
-                  className={`tile${view === v ? ' on' : ''}`}
-                  onClick={() => setView(v)}
-                  aria-current={view === v ? 'page' : undefined}
-                  aria-label={labelOf(t, v)}
-                  title={labelOf(t, v)}
-                >
-                  <Icon name={ICON_OF[v]} />
-                </button>
-              ))}
-            </div>
-            <div className="navright">
+          {/* The pane's header: the hide control on the left, the screen's name
+              in the middle and the fleet size with the frame control on the
+              right. The section switcher now lives in the navigation shell, so
+              the tiles that used to sit here are gone. */}
+          <div className="pane__header">
+            <div className="pane__left">
               <button
-                className="tile"
-                onClick={() => { setView('map'); setFitToken((n) => n + 1) }}
-                aria-label={t('frameFleet')}
-                title={t('frameFleet')}
-              >
-                <Icon name="target" />
-              </button>
-              <button
-                className="tile"
+                className="icon-btn"
                 onClick={() => setNarrow((n) => !n)}
                 aria-pressed={narrow}
                 aria-label={narrow ? t('showList') : t('hideList')}
@@ -264,23 +236,18 @@ export default function App({ user, onLogout }) {
                 <Icon name="back" />
               </button>
             </div>
-          </nav>
-
-          {/* The screen's own name, in a 48px bar between a language switch and
-              the fleet's size. The reference centres its title in the column and
-              so does this, so the title does not move when one side control is
-              absent. */}
-          <div className="pane__header">
-            <div className="pane__left">
-              <div className="lang">
-                <button className={lang === 'it' ? 'on' : ''} onClick={() => setLang('it')}>IT</button>
-                <button className={lang === 'en' ? 'on' : ''} onClick={() => setLang('en')}>EN</button>
-              </div>
-            </div>
-            <h2 className="pane__title">{labelOf(t, view)}</h2>
+            <h2 className="pane__title">{screenLabel(t, view)}</h2>
             <div className="pane__right">
               {/* the fleet size, once, as a count and not as a sentence */}
               <span className="fcount" title={t('trucks')}>{trucks.length}</span>
+              <button
+                className="icon-btn"
+                onClick={() => { setView('map'); setFitToken((n) => n + 1) }}
+                aria-label={t('frameFleet')}
+                title={t('frameFleet')}
+              >
+                <Icon name="target" />
+              </button>
             </div>
           </div>
 
@@ -314,14 +281,6 @@ export default function App({ user, onLogout }) {
             />
           </div>
 
-          {/* The account, at the foot of the pane. An account is not a
-              destination, so it is not a tile. */}
-          <div className="pane__foot">
-            <span className="who">{user.email}</span>
-            <div className="lang">
-              <button className="btn ghost tiny" onClick={onLogout}>{t('logout')}</button>
-            </div>
-          </div>
         </aside>
 
         {/* Rendered in every view, empty on the fleet screen. It is what puts the
@@ -329,6 +288,11 @@ export default function App({ user, onLogout }) {
             without a middle child the two panels sit shoulder to shoulder over
             the map and the console reads backwards. */}
         <main className="col-main" id="main" tabIndex={-1}>
+          <PageHeader
+            t={t}
+            crumbs={[sectionOf(view) && t(sectionOf(view).labelKey), screenLabel(t, view)].filter(Boolean)}
+            title={screenLabel(t, view)}
+          />
           {view === 'map' ? (
             <aside className="col-right">
               <TruckPanel
@@ -345,6 +309,32 @@ export default function App({ user, onLogout }) {
                (styles.css, "motion") runs once per screen change rather than
                never. */
             <div className="workspace" key={view}>
+              {view === 'overview' && (
+                <Overview
+                  t={t}
+                  lang={lang}
+                  devices={devices}
+                  trucks={trucks}
+                  counts={counts}
+                  online={online}
+                  alerts={alerts}
+                  live={live}
+                  loading={loading}
+                  err={err}
+                  onRetry={reloadDevices}
+                />
+              )}
+              {view === 'scrap' && <ScrapScreen t={t} />}
+              {view === 'inventory' && (
+                <div className="pad">
+                  <NotYetAvailable t={t} title={t('inventory')} body={t('inventoryBody')} />
+                </div>
+              )}
+              {view === 'sales' && (
+                <div className="pad">
+                  <NotYetAvailable t={t} title={t('sales')} body={t('salesBody')} />
+                </div>
+              )}
               {view === 'history' && (
                 <TrailHistory
                   truck={selected}
@@ -402,6 +392,7 @@ export default function App({ user, onLogout }) {
           )}
         </main>
       </div>
+      </div>
     </div>
   )
 }
@@ -419,8 +410,6 @@ export default function App({ user, onLogout }) {
 function Settings({ cfg, setCfg, lang, setLang, t }) {
   return (
     <div className="pad settings">
-      <h2 className="ws-title">{t('settings')}</h2>
-
       <div className="sections">
         <SectionGroup icon="settings" title={t('language')}>
           <div className="field">
@@ -485,7 +474,6 @@ function AlertsScreen({ alerts, t, lang }) {
   return (
     <div className="pad">
       <div className="ws-head">
-        <h2 className="ws-title">{t('alerts')}</h2>
         <span className="count">{alerts.length}</span>
       </div>
       <AlertsFeed alerts={alerts} t={t} lang={lang} bare />
