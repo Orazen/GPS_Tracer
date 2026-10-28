@@ -167,6 +167,115 @@ class ScrapRepository:
             for r in rows
         ]
 
+    # -- customers --------------------------------------------------------
+    def create_customer(self, code: str, name: str, email: Optional[str] = None, phone: Optional[str] = None) -> Dict[str, Any]:
+        self.db.execute(
+            "INSERT INTO scrap_customers (code, name, email, phone) VALUES (%s,%s,%s,%s)",
+            (code, name, email, phone),
+        )
+        return {"code": code, "name": name, "email": email, "phone": phone}
+
+    def list_customers(self) -> List[Dict[str, Any]]:
+        rows = self.db.fetch_all("SELECT code, name, email, phone, created_at FROM scrap_customers ORDER BY code")
+        return [{"code": r[0], "name": r[1], "email": r[2], "phone": r[3], "created_at": r[4].isoformat() if r[4] else None} for r in rows]
+
+    # -- orders -----------------------------------------------------------
+    def create_order(self, customer_code: Optional[str], load_id: Optional[str], created_by: Optional[str],
+                     items: List[Dict[str, Any]], currency: str = "EUR") -> str:
+        import uuid
+        order_number = "ORD-" + uuid.uuid4().hex[:10].upper()
+        total = 0.0
+        for it in items:
+            total += float(it["quantity"]) * float(it["price_per_unit"])
+        self.db.execute(
+            "INSERT INTO scrap_orders (order_number, customer_code, load_id, total_amount, currency, created_by) VALUES (%s,%s,%s,%s,%s,%s)",
+            (order_number, customer_code, load_id, total, currency, created_by),
+        )
+        row = self.db.fetch_one("SELECT id FROM scrap_orders WHERE order_number = %s", (order_number,))
+        order_id = row[0]
+        for it in items:
+            line_total = float(it["quantity"]) * float(it["price_per_unit"])
+            self.db.execute(
+                "INSERT INTO scrap_order_items (order_id, material_code, quantity, unit, price_per_unit, line_total) VALUES (%s,%s,%s,%s,%s,%s)",
+                (order_id, it["material_code"], it["quantity"], it.get("unit", "kg"), it["price_per_unit"], line_total),
+            )
+        return order_number
+
+    def get_order(self, order_number: str) -> Optional[Dict[str, Any]]:
+        row = self.db.fetch_one(
+            "SELECT id, order_number, customer_code, load_id, status, total_amount, currency, created_by, created_at, updated_at FROM scrap_orders WHERE order_number = %s",
+            (order_number,),
+        )
+        if not row:
+            return None
+        items = self.db.fetch_all(
+            "SELECT material_code, quantity, unit, price_per_unit, line_total FROM scrap_order_items WHERE order_id = %s",
+            (row[0],),
+        )
+        deliveries = self.db.fetch_all(
+            "SELECT id, status, delivered_at, delivered_by, notes FROM scrap_deliveries WHERE order_id = %s",
+            (row[0],),
+        )
+        return {
+            "id": row[0], "order_number": row[1], "customer_code": row[2], "load_id": row[3],
+            "status": row[4], "total_amount": row[5], "currency": row[6], "created_by": row[7],
+            "created_at": row[8].isoformat() if row[8] else None,
+            "updated_at": row[9].isoformat() if row[9] else None,
+            "items": [{"material_code": i[0], "quantity": i[1], "unit": i[2], "price_per_unit": i[3], "line_total": i[4]} for i in items],
+            "deliveries": [{"id": d[0], "status": d[1], "delivered_at": d[2].isoformat() if d[2] else None, "delivered_by": d[3], "notes": d[4]} for d in deliveries],
+        }
+
+    def list_orders(self, status: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+        if status:
+            rows = self.db.fetch_all(
+                "SELECT order_number, customer_code, load_id, status, total_amount, currency, created_at FROM scrap_orders WHERE status = %s ORDER BY created_at DESC LIMIT %s",
+                (status, limit),
+            )
+        else:
+            rows = self.db.fetch_all(
+                "SELECT order_number, customer_code, load_id, status, total_amount, currency, created_at FROM scrap_orders ORDER BY created_at DESC LIMIT %s",
+                (limit,),
+            )
+        return [{"order_number": r[0], "customer_code": r[1], "load_id": r[2], "status": r[3], "total_amount": r[4], "currency": r[5], "created_at": r[6].isoformat() if r[6] else None} for r in rows]
+
+    def set_order_status(self, order_number: str, status: str) -> None:
+        self.db.execute("UPDATE scrap_orders SET status = %s, updated_at = now() WHERE order_number = %s", (status, order_number))
+
+    # -- deliveries -------------------------------------------------------
+    def create_delivery(self, order_number: str, load_id: Optional[str] = None, notes: Optional[str] = None) -> int:
+        row = self.db.fetch_one("SELECT id FROM scrap_orders WHERE order_number = %s", (order_number,))
+        if not row:
+            raise ValueError("no such order")
+        order_id = row[0]
+        r = self.db.fetch_one(
+            "INSERT INTO scrap_deliveries (order_id, load_id, notes) VALUES (%s,%s,%s) RETURNING id",
+            (order_id, load_id, notes),
+        )
+        return r[0]
+
+    def confirm_delivery(self, delivery_id: int, delivered_by: str, notes: Optional[str] = None) -> None:
+        self.db.execute(
+            "UPDATE scrap_deliveries SET status = 'delivered', delivered_at = now(), delivered_by = %s, notes = COALESCE(%s, notes) WHERE id = %s",
+            (delivered_by, notes, delivery_id),
+        )
+
+    # -- traceability -----------------------------------------------------
+    def trace_load(self, load_id: str) -> Dict[str, Any]:
+        load = self.get_load(load_id)
+        tickets = self.list_weigh_tickets(load_id)
+        movements = self.list_movements(reference=load_id) if False else self.list_movements()
+        movements = [m for m in movements if m.get("reference") == load_id]
+        orders = self.list_orders()
+        linked_orders = [o for o in orders if o.get("load_id") == load_id]
+        return {"load": load, "weigh_tickets": tickets, "stock_movements": movements, "orders": linked_orders}
+
+    # -- reports ----------------------------------------------------------
+    def load_report_rows(self) -> List[Dict[str, Any]]:
+        rows = self.db.fetch_all(
+            "SELECT load_id, truck_ref, material_code, status, created_at FROM scrap_loads ORDER BY created_at DESC"
+        )
+        return [{"load_id": r[0], "truck_ref": r[1], "material_code": r[2], "status": r[3], "created_at": r[4].isoformat() if r[4] else None} for r in rows]
+
     def audit(self, actor: Optional[str], actor_role: Optional[str], action: str, subject_type: Optional[str],
               subject_id: Optional[str], detail: Optional[Dict[str, Any]], source_ip: Optional[str]) -> None:
         import json

@@ -65,6 +65,38 @@ class MovementRequest(BaseModel):
     reason: Optional[str] = None
 
 
+class CustomerRequest(BaseModel):
+    code: str = Field(..., min_length=1, max_length=64)
+    name: str = Field(..., min_length=1, max_length=120)
+    email: Optional[str] = None
+    phone: Optional[str] = None
+
+
+class OrderItemRequest(BaseModel):
+    material_code: str
+    quantity: float
+    unit: str = "kg"
+    price_per_unit: float = 0
+
+
+class OrderRequest(BaseModel):
+    customer_code: Optional[str] = None
+    load_id: Optional[str] = None
+    currency: str = "EUR"
+    items: List[OrderItemRequest]
+
+
+class DeliveryRequest(BaseModel):
+    order_number: str
+    load_id: Optional[str] = None
+    notes: Optional[str] = None
+
+
+class ConfirmDeliveryRequest(BaseModel):
+    delivered_by: str
+    notes: Optional[str] = None
+
+
 def create_app(settings: Optional[Settings] = None, db: Optional[Database] = None) -> FastAPI:
     resolved = settings or load_settings()
     problems = resolved.validate()
@@ -237,6 +269,115 @@ def create_app(settings: Optional[Settings] = None, db: Optional[Database] = Non
                             limit: int = Query(default=200, ge=1, le=500), actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
         rows = repository.list_movements(material_code=material_code, warehouse_code=warehouse_code, limit=limit)
         return {"count": len(rows), "movements": rows}
+
+    # customers
+    @app.post("/api/customers", status_code=status.HTTP_201_CREATED)
+    async def create_customer(payload: CustomerRequest, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+        require_write(actor)
+        try:
+            row = repository.create_customer(payload.code, payload.name, payload.email, payload.phone)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        repository.audit(actor.name, actor.role, "customer.create", "customer", payload.code, None, actor.source_ip)
+        return row
+
+    @app.get("/api/customers")
+    async def list_customers(actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+        rows = repository.list_customers()
+        return {"count": len(rows), "customers": rows}
+
+    # orders
+    @app.post("/api/orders", status_code=status.HTTP_201_CREATED)
+    async def create_order(payload: OrderRequest, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+        require_write(actor)
+        items = [i.model_dump() for i in payload.items]
+        try:
+            order_number = repository.create_order(
+                customer_code=payload.customer_code, load_id=payload.load_id,
+                created_by=actor.name, items=items, currency=payload.currency,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        repository.audit(actor.name, actor.role, "order.create", "order", order_number, {"load_id": payload.load_id}, actor.source_ip)
+        repository.set_order_status(order_number, "confirmed")
+        return repository.get_order(order_number)
+
+    @app.get("/api/orders")
+    async def list_orders(status: Optional[str] = None, limit: int = Query(default=100, ge=1, le=500),
+                         actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+        rows = repository.list_orders(status=status, limit=limit)
+        return {"count": len(rows), "orders": rows}
+
+    @app.get("/api/orders/{order_number}")
+    async def get_order(order_number: str, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+        order = repository.get_order(order_number)
+        if not order:
+            raise HTTPException(status_code=404, detail="no such order")
+        return order
+
+    @app.post("/api/orders/{order_number}/status")
+    async def set_order_status(order_number: str, status_value: str = Query(..., alias="status"),
+                               actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+        require_write(actor)
+        if not repository.get_order(order_number):
+            raise HTTPException(status_code=404, detail="no such order")
+        repository.set_order_status(order_number, status_value)
+        return repository.get_order(order_number)
+
+    # deliveries
+    @app.post("/api/deliveries", status_code=status.HTTP_201_CREATED)
+    async def create_delivery(payload: DeliveryRequest, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+        require_write(actor)
+        try:
+            delivery_id = repository.create_delivery(payload.order_number, payload.load_id, payload.notes)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc))
+        repository.audit(actor.name, actor.role, "delivery.create", "delivery", str(delivery_id), {"order": payload.order_number}, actor.source_ip)
+        return {"delivery_id": delivery_id, "order_number": payload.order_number}
+
+    @app.post("/api/deliveries/{delivery_id}/confirm")
+    async def confirm_delivery(delivery_id: int, payload: ConfirmDeliveryRequest, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+        require_write(actor)
+        repository.confirm_delivery(delivery_id, payload.delivered_by, payload.notes)
+        repository.audit(actor.name, actor.role, "delivery.confirm", "delivery", str(delivery_id), {"by": payload.delivered_by}, actor.source_ip)
+        return {"delivery_id": delivery_id, "status": "delivered"}
+
+    # traceability
+    @app.get("/api/trace/{load_id}")
+    async def trace_load(load_id: str, actor: Actor = Depends(authenticate)) -> Dict[str, Any]:
+        if not repository.get_load(load_id):
+            raise HTTPException(status_code=404, detail="no such load")
+        return repository.trace_load(load_id)
+
+    # reports
+    @app.get("/api/reports/loads.csv")
+    async def loads_report(actor: Actor = Depends(authenticate)) -> "StreamingResponse":
+        import csv as _csv
+        import io as _io
+        from fastapi.responses import StreamingResponse
+        rows = repository.load_report_rows()
+        repository.audit(actor.name, actor.role, "report.export", "load", None, {"format": "csv", "rows": len(rows)}, actor.source_ip)
+
+        def generate():
+            buf = _io.StringIO()
+            writer = _csv.writer(buf)
+            writer.writerow(["# GPS_Tracer scrap loads report"])
+            writer.writerow(["# generated_at_utc", _dt.datetime.now(_dt.timezone.utc).isoformat()])
+            writer.writerow(["# generated_by", actor.name])
+            writer.writerow([])
+            yield buf.getvalue()
+            buf.seek(0); buf.truncate(0)
+            writer.writerow(["load_id", "truck_ref", "material_code", "status", "created_at"])
+            yield buf.getvalue()
+            buf.seek(0); buf.truncate(0)
+            for r in rows:
+                writer.writerow([r["load_id"], r["truck_ref"], r["material_code"], r["status"], r["created_at"]])
+                yield buf.getvalue()
+                buf.seek(0); buf.truncate(0)
+
+        return StreamingResponse(generate(), media_type="text/csv; charset=utf-8",
+                                headers={"Content-Disposition": 'attachment; filename="scrap-loads.csv"',
+                                         "Cache-Control": "no-store, private"})
 
     @app.get("/api/audit")
     async def audit(limit: int = Query(default=100, ge=1, le=500), actor: Actor = Depends(authenticate)) -> Dict[str, Any]:

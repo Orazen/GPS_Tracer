@@ -28,6 +28,7 @@ backups/
 # clone had no schema at all and could not start. Caught by auditing what the
 # ignore rules were hiding, not by a test.
 !tacho/migrations/*.sql
+!scrap/migrations/*.sql
 
 # Generated tool output (the archify working set): candidate/review JSON and a
 # rendered HTML artifact, all reproducible. Contains absolute local paths.
