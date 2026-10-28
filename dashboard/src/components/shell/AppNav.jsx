@@ -62,6 +62,7 @@ export default function AppNav({ sections, view, onView, lang, onLang, t, email,
             return (
               <li key={s.id}>
                 <button
+                  data-section={s.id}
                   className={`sidenav__item${on ? ' on' : ''}`}
                   aria-current={on && s.screens.length === 1 ? 'page' : undefined}
                   onClick={() => go(s.screens[0])}
@@ -74,6 +75,7 @@ export default function AppNav({ sections, view, onView, lang, onLang, t, email,
                     {s.screens.map((v) => (
                       <li key={v}>
                         <button
+                          data-view={v}
                           className={`sidenav__sub-item${view === v ? ' on' : ''}`}
                           aria-current={view === v ? 'page' : undefined}
                           onClick={() => go(v)}

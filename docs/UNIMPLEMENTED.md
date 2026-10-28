@@ -245,3 +245,16 @@ Recorded so they are not rediscovered expensively.
     advice now prints `--imei … --name … --adopt-seen-id …`; and `--check` exited 0
     when no container could be inspected, so it now exits 1. Measured offline only;
     the physical checks are in `docs/PHYSICAL-ACCEPTANCE.md` and are not run.
+
+---
+
+## Dashboard shell (this release)
+
+| Feature | Status | Note |
+|---|---|---|
+| Unified navigation shell | ✅ BUILT | Eight sections, breadcrumbs, shared states, Europe/Rome dates, IT/EN. |
+| Scrap proxy route | ✅ BUILT | `/scrap/*` in `dashboard/server.mjs`, token server-side, idempotency key forwarded. |
+| Scrap UI screens | ❌ NOT IMPLEMENTED | Placeholder only. |
+| Inventory UI | ❌ NOT IMPLEMENTED | Placeholder only. |
+| Sales & deliveries UI | ❌ NOT IMPLEMENTED | Placeholder only. |
+| Dark theme | ❌ NOT IMPLEMENTED | Light only; design audit covers light. |

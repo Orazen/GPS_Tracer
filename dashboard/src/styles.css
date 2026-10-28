@@ -1457,7 +1457,7 @@ The causes were specific and are fixed specifically: hard `min-width: 220px` on
 }
 .crumbs li { display: inline-flex; gap: 6px; }
 .crumbs li[aria-current="page"] { color: var(--fg2); }
-.crumbs__sep { color: var(--icon); }
+.crumbs__sep { color: var(--muted); }
 .page-head__title { margin: 0; font-size: var(--t-xl); font-weight: 500; color: var(--fg); }
 
 /* ---------- loading, empty, error, not yet available ---------- */

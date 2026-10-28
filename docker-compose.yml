@@ -193,6 +193,13 @@ services:
       TRACCAR_INTERNAL_URL: http://traccar:${TRACCAR_WEB_PORT:-8082}
       TACHO_INTERNAL_URL: http://tacho-api:8084
       TACHO_API_TOKEN: ${TACHO_API_TOKEN:?set TACHO_API_TOKEN - see .env.example}
+      # Scrap service. Optional here on purpose: without the token the /scrap
+      # proxy answers 503 and the rest of the dashboard still starts. Making it
+      # required would stop an existing deployment from coming up on upgrade.
+      SCRAP_INTERNAL_URL: http://scrap-api:8085
+      SCRAP_API_TOKEN: ${SCRAP_API_TOKEN:-}
+      # Role for a signed-in non-admin user. Read-only unless deliberately changed.
+      SCRAP_DEFAULT_ROLE: ${SCRAP_DEFAULT_ROLE:-viewer}
       DASHBOARD_MAX_BODY_BYTES: ${DASHBOARD_MAX_BODY_BYTES:-16777216}
       # The "Connect a tracker" screen prints the host port the tracker must be
       # pointed at, which is this one -- the published side of the H02 mapping,
